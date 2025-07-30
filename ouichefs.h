@@ -49,7 +49,7 @@ struct ouichefs_inode {
 	__le64 i_nmtime; /* Modification time (nsec) */
 	__le32 i_blocks; /* Block count */
 	__le32 i_nlink; /* Hard links count */
-	__le32 index_block; /* Block with list of blocks for this file */
+	__le32 index_block; /* 27 LSB store block number containing slice, 5 MSB store slice number in block */
 };
 
 struct ouichefs_inode_info {
@@ -75,6 +75,8 @@ struct ouichefs_sb_info {
 
 	unsigned long *ifree_bitmap; /* In-memory free inodes bitmap */
 	unsigned long *bfree_bitmap; /* In-memory free blocks bitmap */
+
+	sector_t s_free_sliced_blocks; /* Number of the first block in list of partially filled blocks, 0 = empty */
 };
 
 struct ouichefs_file_index_block {
@@ -87,6 +89,17 @@ struct ouichefs_dir_block {
 		char filename[OUICHEFS_FILENAME_LEN];
 	} files[OUICHEFS_MAX_SUBFILES];
 };
+
+struct ouichefs_sliced_block_header {
+	__le32 slice_bitmap; /* Availibility of slice (1 for free, 0 for occupied) */
+	__le32 next_partial_block; /* Block number of next partially filled block */
+	char reserverd[120];
+} __attribute__((packed));
+
+struct ouichefs_sliced_block {
+	struct ouichefs_sliced_block_header header;
+	char slices[31][128];
+} __attribute__((packed));
 
 /* superblock functions */
 int ouichefs_fill_super(struct super_block *sb, void *data, int silent);
