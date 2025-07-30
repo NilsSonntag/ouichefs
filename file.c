@@ -116,9 +116,6 @@ static ssize_t ouichefs_read(struct file *file, char __user *buf, size_t count,
 	sector_t iblock = pos / OUICHEFS_BLOCK_SIZE;
 	ssize_t ret, err = 0;
 
-	pr_info("pos: %llu", pos);
-	pr_info("iblock: %llu", iblock);
-
 	struct buffer_head init;
 	memset(&init, 0, sizeof(init));
 	bh_res = &init;
@@ -138,9 +135,6 @@ static ssize_t ouichefs_read(struct file *file, char __user *buf, size_t count,
 	loff_t block_offset = pos % OUICHEFS_BLOCK_SIZE;
 	size_t bytes_to_read =
 		min(count, (size_t)(OUICHEFS_BLOCK_SIZE - block_offset));
-	pr_info("count: %lu", count);
-	pr_info("block offset: %lld", block_offset);
-	pr_info("bytes_to_read: %lu", bytes_to_read);
 	if (bytes_to_read == 0)
 		goto brelse_read;
 
@@ -155,7 +149,6 @@ static ssize_t ouichefs_read(struct file *file, char __user *buf, size_t count,
 
 brelse_read:
 	brelse(bh_read);
-	pr_info("return: %lu", ret);
 	return ret;
 }
 
@@ -169,7 +162,6 @@ static ssize_t ouichefs_write(struct file *file, const char __user *buf,
 	loff_t pos = *offset;
 	sector_t iblock = pos / OUICHEFS_BLOCK_SIZE;
 	uint32_t nr_allocs = 0;
-	// sector_t phys_block_to_write;
 	struct buffer_head *bh_write;
 	struct buffer_head *bh_res;
 	struct super_block *sb = inode->i_sb;
@@ -201,9 +193,6 @@ static ssize_t ouichefs_write(struct file *file, const char __user *buf,
 	loff_t block_offset = pos % OUICHEFS_BLOCK_SIZE;
 	size_t bytes_to_write =
 		min(count, (size_t)(OUICHEFS_BLOCK_SIZE - block_offset));
-	pr_info("count: %lu", count);
-	pr_info("block offset: %lld", block_offset);
-	pr_info("bytes_to_write: %lu", bytes_to_write);
 	if (bytes_to_write == 0) {
 		brelse(bh_write);
 		goto end;
