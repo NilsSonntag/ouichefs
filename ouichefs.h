@@ -77,6 +77,9 @@ struct ouichefs_sb_info {
 	unsigned long *bfree_bitmap; /* In-memory free blocks bitmap */
 
 	sector_t s_free_sliced_blocks; /* Number of the first block in list of partially filled blocks, 0 = empty */
+
+	struct super_block *sb;
+	struct kobject sysfs_kobj;
 };
 
 struct ouichefs_file_index_block {
@@ -92,8 +95,8 @@ struct ouichefs_dir_block {
 
 struct ouichefs_sliced_block_header {
 	__le32 slice_bitmap; /* Availibility of slice (1 for free, 0 for occupied) */
-	__le32 next_partial_block; /* Block number of next partially filled block */
-	char reserverd[120];
+	__le32 next_partial_block; /* Block number of next partially filled block, 0 = last */
+	char reserved[120];
 } __attribute__((packed));
 
 struct ouichefs_sliced_block {
@@ -109,6 +112,13 @@ int ouichefs_init_inode_cache(void);
 void ouichefs_destroy_inode_cache(void);
 struct inode *ouichefs_iget(struct super_block *sb, unsigned long ino);
 
+/* sysfs directory */
+extern struct kobject *ouichefs_sysfs_dir;
+
+/* sysfs functions */
+int ouichefs_sysfs_init(struct super_block *sb);
+void ouichefs_sysfs_exit(struct super_block *sb);
+
 /* file functions */
 extern const struct file_operations ouichefs_file_ops;
 extern const struct file_operations ouichefs_dir_ops;
@@ -117,5 +127,12 @@ extern const struct file_operations ouichefs_dir_ops;
 #define OUICHEFS_SB(sb) (sb->s_fs_info)
 #define OUICHEFS_INODE(inode) \
 	(container_of(inode, struct ouichefs_inode_info, vfs_inode))
+
+/* Other inline helpers */
+static inline struct ouichefs_sb_info *
+OUICHEFS_SB_FROM_KOBJ(struct kobject *kobj)
+{
+	return container_of(kobj, struct ouichefs_sb_info, sysfs_kobj);
+}
 
 #endif /* _OUICHEFS_H */

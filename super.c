@@ -139,7 +139,8 @@ static int sync_ifree(struct super_block *sb, int wait)
 			return -EIO;
 
 		copy_bitmap_to_le64((__le64 *)bh->b_data,
-			(void *)sbi->ifree_bitmap + i * OUICHEFS_BLOCK_SIZE);
+				    (void *)sbi->ifree_bitmap +
+					    i * OUICHEFS_BLOCK_SIZE);
 
 		mark_buffer_dirty(bh);
 		if (wait)
@@ -165,7 +166,8 @@ static int sync_bfree(struct super_block *sb, int wait)
 			return -EIO;
 
 		copy_bitmap_to_le64((__le64 *)bh->b_data,
-			(void *)sbi->bfree_bitmap + i * OUICHEFS_BLOCK_SIZE);
+				    (void *)sbi->bfree_bitmap +
+					    i * OUICHEFS_BLOCK_SIZE);
 
 		mark_buffer_dirty(bh);
 		if (wait)
@@ -272,6 +274,7 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 	sbi->nr_bfree_blocks = le32_to_cpu(csb->nr_bfree_blocks);
 	sbi->nr_free_inodes = le32_to_cpu(csb->nr_free_inodes);
 	sbi->nr_free_blocks = le32_to_cpu(csb->nr_free_blocks);
+	sbi->sb = sb;
 	sb->s_fs_info = sbi;
 
 	brelse(bh);
@@ -292,8 +295,9 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 			goto free_ifree;
 		}
 
-		copy_bitmap_from_le64((void *)sbi->ifree_bitmap + i * OUICHEFS_BLOCK_SIZE,
-			(__le64 *)bh->b_data);
+		copy_bitmap_from_le64((void *)sbi->ifree_bitmap +
+					      i * OUICHEFS_BLOCK_SIZE,
+				      (__le64 *)bh->b_data);
 
 		brelse(bh);
 	}
@@ -314,8 +318,9 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 			goto free_bfree;
 		}
 
-		copy_bitmap_from_le64((void *)sbi->bfree_bitmap + i * OUICHEFS_BLOCK_SIZE,
-			(__le64 *)bh->b_data);
+		copy_bitmap_from_le64((void *)sbi->bfree_bitmap +
+					      i * OUICHEFS_BLOCK_SIZE,
+				      (__le64 *)bh->b_data);
 
 		brelse(bh);
 	}
