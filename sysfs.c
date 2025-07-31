@@ -33,7 +33,7 @@ static ssize_t sliced_blocks_show(struct kobject *kobj,
 				  struct kobj_attribute *attr, char *buf)
 {
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB_FROM_KOBJ(kobj);
-	return snprintf(buf, PAGE_SIZE, "%u\n", get_used_blocks(sbi));
+	return snprintf(buf, PAGE_SIZE, "%u\n", sbi->nr_sliced_blocks);
 }
 
 static ssize_t total_free_slices_show(struct kobject *kobj,

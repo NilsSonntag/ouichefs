@@ -53,7 +53,7 @@ struct ouichefs_inode {
 };
 
 struct ouichefs_inode_info {
-	uint32_t index_block;
+	uint32_t index_block; /* 27 LSB store block number containing slice, 5 MSB store slice number in block */
 	struct inode vfs_inode;
 };
 
@@ -80,6 +80,7 @@ struct ouichefs_sb_info {
 
 	struct super_block *sb;
 	struct kobject sysfs_kobj;
+	uint32_t nr_sliced_blocks; /* Total number of sliced blocks */
 };
 
 struct ouichefs_file_index_block {

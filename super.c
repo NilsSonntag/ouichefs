@@ -269,6 +269,7 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 	}
 	sbi->nr_blocks = le32_to_cpu(csb->nr_blocks);
 	sbi->nr_inodes = le32_to_cpu(csb->nr_inodes);
+	sbi->nr_sliced_blocks = le32_to_cpu(csb->nr_sliced_blocks);
 	sbi->nr_istore_blocks = le32_to_cpu(csb->nr_istore_blocks);
 	sbi->nr_ifree_blocks = le32_to_cpu(csb->nr_ifree_blocks);
 	sbi->nr_bfree_blocks = le32_to_cpu(csb->nr_bfree_blocks);
