@@ -215,11 +215,11 @@ static ssize_t ouichefs_write(struct file *file, const char __user *buf,
 	uint32_t nr_blocks_old = inode->i_blocks;
 
 	/* Update inode metadata */
+	inode->i_size = pos + bytes_to_write;
 	inode->i_blocks = (roundup(inode->i_size, OUICHEFS_BLOCK_SIZE) /
 			   OUICHEFS_BLOCK_SIZE) +
 			  1;
 	inode->i_mtime = inode->i_ctime = current_time(inode);
-	inode->i_size = pos + bytes_to_write;
 	mark_inode_dirty(inode);
 
 	/* If file is smaller than before, free unused blocks */
