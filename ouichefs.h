@@ -18,6 +18,9 @@
 #define OUICHEFS_FILENAME_LEN 28
 #define OUICHEFS_MAX_SUBFILES 128
 
+#define OUICHEFS_SLICES_PER_BLOCK 32
+#define OUICHEFS_SLICE_SIZE (OUICHEFS_BLOCK_SIZE / OUICHEFS_SLICES_PER_BLOCK)
+
 /*
  * ouiche_fs partition layout
  *
@@ -124,6 +127,10 @@ void ouichefs_sysfs_exit(struct super_block *sb);
 extern const struct file_operations ouichefs_file_ops;
 extern const struct file_operations ouichefs_dir_ops;
 
+/* ioctl commmands */
+#define DUMP_BLOCK \
+	_IOR('D', 1, char[OUICHEFS_BLOCK_SIZE + OUICHEFS_SLICES_PER_BLOCK + 1])
+
 /* Getters for superbock and inode */
 #define OUICHEFS_SB(sb) (sb->s_fs_info)
 #define OUICHEFS_INODE(inode) \
@@ -135,5 +142,4 @@ OUICHEFS_SB_FROM_KOBJ(struct kobject *kobj)
 {
 	return container_of(kobj, struct ouichefs_sb_info, sysfs_kobj);
 }
-
 #endif /* _OUICHEFS_H */

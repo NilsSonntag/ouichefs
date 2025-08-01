@@ -114,7 +114,8 @@ static ssize_t ouichefs_read(struct file *file, char __user *buf, size_t count,
 	struct buffer_head *bh_read;
 	loff_t pos = *offset;
 	sector_t iblock = pos / OUICHEFS_BLOCK_SIZE;
-	ssize_t ret, err = 0;
+	ssize_t ret = 0;
+	int err = 0;
 
 	struct buffer_head init;
 	memset(&init, 0, sizeof(init));
@@ -152,6 +153,35 @@ brelse_read:
 	return ret;
 }
 
+static int get_new_sliced_block(struct ouichefs_sb_info *sbi)
+{
+	struct buffer_head *bh;
+	sector_t sliced_block_nr = get_free_block(sbi);
+
+	if (!sliced_block_nr)
+		return -ENOSPC;
+
+	bh = sb_bread(sbi->sb, sliced_block_nr);
+	if (!bh)
+		return -EIO;
+
+	struct ouichefs_sliced_block *s_block =
+		(struct ouichefs_sliced_block *)bh->b_data;
+	struct ouichefs_sliced_block_header *s_header =
+		(struct ouichefs_sliced_block_header *)&s_block->header;
+	unsigned long slice_bitmap = __le32_to_cpu(s_header->slice_bitmap);
+
+	slice_bitmap |= GENMASK(31, 1);
+
+	s_header->slice_bitmap = cpu_to_le32(slice_bitmap);
+	brelse(bh);
+
+	sbi->s_free_sliced_blocks = sliced_block_nr;
+	sbi->nr_sliced_blocks++;
+
+	return 0;
+}
+
 static ssize_t ouichefs_write(struct file *file, const char __user *buf,
 			      size_t count, loff_t *ppos)
 {
@@ -165,8 +195,8 @@ static ssize_t ouichefs_write(struct file *file, const char __user *buf,
 	loff_t pos = *ppos;
 	// sector_t iblock = pos / OUICHEFS_BLOCK_SIZE;
 	uint32_t nr_allocs = 0;
-	int ret = 0;
-	// int err = 0;
+	ssize_t ret = 0;
+	int err = 0;
 
 	// TODO: update for 1.8
 	if (pos + count > 128)
@@ -193,16 +223,15 @@ static ssize_t ouichefs_write(struct file *file, const char __user *buf,
 
 	sector_t sliced_block_nr = sbi->s_free_sliced_blocks;
 	if (sliced_block_nr == 0) {
-		sliced_block_nr = get_free_block(sbi);
-		if (!sliced_block_nr)
-			return -ENOSPC;
-		sbi->s_free_sliced_blocks = sliced_block_nr;
-		sbi->nr_sliced_blocks++;
+		err = get_new_sliced_block(sbi);
+		if (err < 0)
+			return err;
+		sliced_block_nr = sbi->s_free_sliced_blocks;
 	}
 
 	bh_write = sb_bread(sb, sliced_block_nr);
 	if (!bh_write)
-		return -EFAULT;
+		return -EIO;
 
 	struct ouichefs_sliced_block *s_block =
 		(struct ouichefs_sliced_block *)bh_write->b_data;
@@ -249,8 +278,10 @@ static ssize_t ouichefs_write(struct file *file, const char __user *buf,
 
 	/* Update inode metadata */
 	inode->i_size = pos + bytes_to_write;
-	ci->index_block = (slice_to_write << 27) | sliced_block_nr;
-	/* has 27 bits at max */
+	put_block(sbi, ci->index_block);
+	ci->index_block = (slice_to_write << 27) |
+			  sliced_block_nr; /* has 27 bits at max */
+
 	// inode->i_blocks = (roundup(inode->i_size, OUICHEFS_BLOCK_SIZE) /
 	// 		   OUICHEFS_BLOCK_SIZE) +
 	// 		  1;
@@ -285,6 +316,78 @@ static ssize_t ouichefs_write(struct file *file, const char __user *buf,
 	return ret;
 }
 
+static long ouichefs_ioctl(struct file *file, unsigned int cmd,
+			   unsigned long arg)
+{
+	if (cmd != DUMP_BLOCK)
+		return -ENOIOCTLCMD;
+
+	struct inode *inode = file_inode(file);
+	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
+	struct super_block *sb = inode->i_sb;
+	struct buffer_head *bh;
+	sector_t block;
+	char *buffer_to_print;
+	char *current_slice;
+	unsigned int buffer_offset = 0;
+	int written;
+	int ret = 0;
+
+	if (inode->i_size > 128)
+		return -EFBIG;
+
+	block = ci->index_block & GENMASK(26, 0);
+	bh = sb_bread(sb, block);
+	if (!bh)
+		return -EIO;
+
+	buffer_to_print =
+		kmalloc(OUICHEFS_BLOCK_SIZE + OUICHEFS_SLICES_PER_BLOCK + 1,
+			GFP_KERNEL);
+	if (!buffer_to_print) {
+		ret = -ENOMEM;
+		goto brelse_bh;
+	}
+
+	/* print bitmap */
+	current_slice = bh->b_data;
+	for (int i = 0; i < 4; ++i) {
+		written = snprintf(buffer_to_print + buffer_offset, 4, "%02x",
+				   current_slice[i]);
+		if (written < 0) {
+			ret = -EFAULT;
+			goto cleanup;
+		}
+		buffer_offset += written;
+	}
+	buffer_to_print[buffer_offset++] = '\n';
+
+	for (unsigned int slice = 1; slice < OUICHEFS_SLICES_PER_BLOCK;
+	     ++slice) {
+		current_slice = bh->b_data + OUICHEFS_SLICE_SIZE * slice;
+		written = snprintf(buffer_to_print + buffer_offset,
+				   OUICHEFS_SLICE_SIZE + 2, "%.*s\n",
+				   OUICHEFS_SLICE_SIZE, current_slice);
+		if (written < 0) {
+			ret = -EFAULT;
+			goto cleanup;
+		}
+		buffer_offset += written;
+	}
+	buffer_to_print[buffer_offset] = '\0';
+	if (copy_to_user((void __user *)arg, buffer_to_print,
+			 buffer_offset + 1)) {
+		ret = -EFAULT;
+		goto cleanup;
+	}
+
+cleanup:
+	kfree(buffer_to_print);
+brelse_bh:
+	brelse(bh);
+	return ret;
+}
+
 const struct file_operations ouichefs_file_ops = {
 	.owner = THIS_MODULE,
 	.open = ouichefs_open,
@@ -292,4 +395,5 @@ const struct file_operations ouichefs_file_ops = {
 	.read = ouichefs_read,
 	.write = ouichefs_write,
 	.fsync = generic_file_fsync,
+	.unlocked_ioctl = ouichefs_ioctl,
 };
