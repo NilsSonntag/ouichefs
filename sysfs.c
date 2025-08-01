@@ -28,7 +28,6 @@ static ssize_t used_blocks_show(struct kobject *kobj,
 	return snprintf(buf, PAGE_SIZE, "%u\n", get_used_blocks(sbi));
 }
 
-// TODO: update after 1.5
 static ssize_t sliced_blocks_show(struct kobject *kobj,
 				  struct kobj_attribute *attr, char *buf)
 {
@@ -52,7 +51,7 @@ static ssize_t total_free_slices_show(struct kobject *kobj,
 		struct ouichefs_sliced_block *s_block =
 			(struct ouichefs_sliced_block *)bh->b_data;
 		struct ouichefs_sliced_block_header s_header = s_block->header;
-		total_free_slices += 32 - hweight32(s_header.slice_bitmap);
+		total_free_slices += hweight32(s_header.slice_bitmap);
 		// increment iterator
 		curr = s_header.next_partial_block;
 		brelse(bh);

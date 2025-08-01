@@ -171,13 +171,15 @@ static struct inode *ouichefs_new_inode(struct inode *dir, mode_t mode)
 	}
 	ci = OUICHEFS_INODE(inode);
 
-	/* Get a free block for this new inode's index */
-	bno = get_free_block(sbi);
-	if (!bno) {
-		ret = -ENOSPC;
-		goto put_inode;
+	/* Get a free block as index for directories, files is done in write */
+	if (S_ISDIR(mode)) {
+		bno = get_free_block(sbi);
+		if (!bno) {
+			ret = -ENOSPC;
+			goto put_inode;
+		}
+		ci->index_block = bno;
 	}
-	ci->index_block = bno;
 
 	/* Initialize inode */
 	inode_init_owner(&nop_mnt_idmap, inode, dir, mode);
@@ -291,6 +293,34 @@ end:
 	return ret;
 }
 
+void remove_from_partial_list(struct super_block *sb,
+			      struct ouichefs_sb_info *sbi, sector_t block,
+			      struct ouichefs_sliced_block *s_block)
+{
+	struct buffer_head *bh_iter = sb_bread(sb, sbi->s_free_sliced_blocks);
+	struct ouichefs_sliced_block *iter_block =
+		(struct ouichefs_sliced_block *)bh_iter->b_data;
+	sector_t next_partial_block =
+		le32_to_cpu(iter_block->header.next_partial_block);
+	while (next_partial_block != block && next_partial_block != 0) {
+		brelse(bh_iter);
+		bh_iter = sb_bread(sb, next_partial_block);
+		iter_block = (struct ouichefs_sliced_block *)bh_iter->b_data;
+		next_partial_block =
+			le32_to_cpu(iter_block->header.next_partial_block);
+	}
+	if (next_partial_block == block) {
+		iter_block->header.next_partial_block =
+			s_block->header.next_partial_block;
+		mark_buffer_dirty(bh_iter);
+	} else {
+		/* block to unlink is first in list (s_free_sliced_blocks) */
+		sbi->s_free_sliced_blocks =
+			le32_to_cpu(s_block->header.next_partial_block);
+	}
+	brelse(bh_iter);
+}
+
 /*
  * Remove a link for a file. If link count is 0, destroy file in this way:
  *   - remove the file from its parent directory.
@@ -347,35 +377,75 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 	 * forever. If we fail to scrub a data block, don't fail (too late
 	 * anyway), just put the block and continue.
 	 */
-	bh = sb_bread(sb, bno);
-	if (!bh)
-		goto clean_inode;
-	file_block = (struct ouichefs_file_index_block *)bh->b_data;
-	if (S_ISDIR(inode->i_mode))
+	if (S_ISDIR(inode->i_mode)) {
+		bh = sb_bread(sb, bno);
+		file_block = (struct ouichefs_file_index_block *)bh->b_data;
 		goto scrub;
-	for (i = 0; i < inode->i_blocks - 1; i++) {
-		char *block;
-
-		if (!file_block->blocks[i])
-			continue;
-
-		bh2 = sb_bread(sb, le32_to_cpu(file_block->blocks[i]));
-		if (!bh2)
-			goto put_block;
-		block = (char *)bh2->b_data;
-		memset(block, 0, OUICHEFS_BLOCK_SIZE);
-		mark_buffer_dirty(bh2);
-		brelse(bh2);
-put_block:
-		put_block(sbi, le32_to_cpu(file_block->blocks[i]));
 	}
+	if (inode->i_size <= OUICHEFS_SLICE_SIZE) {
+		int slice = (bno >> 27) & GENMASK(4, 0);
+		sector_t block = bno & GENMASK(26, 0);
+
+		bh = sb_bread(sb, block);
+		if (!bh)
+			goto clean_inode;
+
+		struct ouichefs_sliced_block *s_block =
+			(struct ouichefs_sliced_block *)bh->b_data;
+		unsigned long slice_bitmap =
+			le32_to_cpu(s_block->header.slice_bitmap);
+
+		if (slice_bitmap == 0) {
+			s_block->header.next_partial_block =
+				cpu_to_le32(sbi->s_free_sliced_blocks);
+			sbi->s_free_sliced_blocks = block;
+		}
+
+		bitmap_set(&slice_bitmap, slice, 1);
+		// memset(s_block->slices[slice], 0, OUICHEFS_SLICE_SIZE);
+
+		if (slice_bitmap ==
+		    GENMASK((OUICHEFS_SLICES_PER_BLOCK - 1), 1)) {
+			/* block completely empty */
+			memset(&s_block->header, 0, OUICHEFS_SLICE_SIZE);
+			remove_from_partial_list(sb, sbi, block, s_block);
+			put_block(sbi, block);
+		} else {
+			s_block->header.slice_bitmap =
+				cpu_to_le32(slice_bitmap);
+		}
+		mark_buffer_dirty(bh);
+		brelse(bh);
+	} else {
+		/* legacy block */
+		bh = sb_bread(sb, bno);
+		if (!bh)
+			goto clean_inode;
+		file_block = (struct ouichefs_file_index_block *)bh->b_data;
+		for (i = 0; i < inode->i_blocks - 1; i++) {
+			char *block;
+			if (!file_block->blocks[i])
+				continue;
+
+			bh2 = sb_bread(sb, le32_to_cpu(file_block->blocks[i]));
+			if (!bh2)
+				goto put_block;
+			block = (char *)bh2->b_data;
+			memset(block, 0, OUICHEFS_BLOCK_SIZE);
+			mark_buffer_dirty(bh2);
+			brelse(bh2);
+put_block:
+			put_block(sbi, le32_to_cpu(file_block->blocks[i]));
+		}
 
 scrub:
-	/* Scrub index block */
-	memset(file_block, 0, OUICHEFS_BLOCK_SIZE);
-	mark_buffer_dirty(bh);
-	sync_dirty_buffer(bh);
-	brelse(bh);
+		/* Scrub index block */
+		memset(file_block, 0, OUICHEFS_BLOCK_SIZE);
+		mark_buffer_dirty(bh);
+		sync_dirty_buffer(bh);
+		brelse(bh);
+		put_block(sbi, bno);
+	}
 
 clean_inode:
 	/* Cleanup inode and mark dirty */
@@ -391,9 +461,6 @@ clean_inode:
 		inode->i_atime.tv_nsec = 0;
 	inode_dec_link_count(inode);
 	mark_inode_dirty(inode);
-
-	/* Free inode and index block from bitmap */
-	put_block(sbi, bno);
 	put_inode(sbi, ino);
 
 	return 0;
