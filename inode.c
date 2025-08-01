@@ -402,7 +402,7 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 		}
 
 		bitmap_set(&slice_bitmap, slice, 1);
-		// memset(s_block->slices[slice], 0, OUICHEFS_SLICE_SIZE);
+		memset(s_block->slices[slice], 0, OUICHEFS_SLICE_SIZE);
 
 		if (slice_bitmap ==
 		    GENMASK((OUICHEFS_SLICES_PER_BLOCK - 1), 1)) {

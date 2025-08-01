@@ -77,45 +77,29 @@ static int ouichefs_open(struct inode *inode, struct file *file)
 	bool rdwr = (file->f_flags & O_RDWR) != 0;
 	bool trunc = (file->f_flags & O_TRUNC) != 0;
 
-	if (!(wronly || rdwr) || !trunc || !(inode->i_size != 0))
+	if (!(wronly || rdwr) || !trunc || !(inode->i_size != 0) ||
+	    inode->i_size <= OUICHEFS_SLICE_SIZE)
 		return 0;
 
 	struct super_block *sb = inode->i_sb;
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
 	struct buffer_head *bh;
-	sector_t block;
-
-	if (inode->i_size > OUICHEFS_SLICE_SIZE) {
-		block = ci->index_block;
-	} else {
-		block = ci->index_block & GENMASK(26, 0);
-	}
+	sector_t block = ci->index_block;
 
 	bh = sb_bread(sb, block);
 
 	if (!bh)
 		return -EIO;
 
-	if (inode->i_size > OUICHEFS_SLICE_SIZE) {
-		struct ouichefs_file_index_block *index =
-			(struct ouichefs_file_index_block *)bh->b_data;
+	struct ouichefs_file_index_block *index =
+		(struct ouichefs_file_index_block *)bh->b_data;
 
-		for (sector_t iblock = 0; index->blocks[iblock] != 0;
-		     iblock++) {
-			put_block(sbi, le32_to_cpu(index->blocks[iblock]));
-			index->blocks[iblock] = 0;
-		}
-		inode->i_blocks = 1;
-	} else {
-		unsigned int slice = (ci->index_block >> 27) & GENMASK(4, 0);
-		struct ouichefs_sliced_block *s_block =
-			(struct ouichefs_sliced_block *)bh->b_data;
-		unsigned long bitmap =
-			le32_to_cpu(s_block->header.slice_bitmap);
-		bitmap_set(&bitmap, slice, 1);
-		s_block->header.slice_bitmap = cpu_to_le32(bitmap);
+	for (sector_t iblock = 0; index->blocks[iblock] != 0; iblock++) {
+		put_block(sbi, le32_to_cpu(index->blocks[iblock]));
+		index->blocks[iblock] = 0;
 	}
+	inode->i_blocks = 1;
 	inode->i_size = 0;
 
 	mark_buffer_dirty(bh);
@@ -381,7 +365,7 @@ static long ouichefs_ioctl(struct file *file, unsigned int cmd,
 
 	/* print bitmap */
 	current_slice = bh->b_data;
-	for (int i = 0; i < 4; ++i) {
+	for (int i = 3; i >= 0; --i) {
 		written = snprintf(buffer_to_print + buffer_offset, 4, "%02x",
 				   current_slice[i]);
 		if (written < 0) {
@@ -390,7 +374,7 @@ static long ouichefs_ioctl(struct file *file, unsigned int cmd,
 		}
 		buffer_offset += written;
 	}
-	buffer_to_print[buffer_offset++] = '\n';
+	// buffer_to_print[buffer_offset++] = '\n';
 
 	for (unsigned int slice = 1; slice < OUICHEFS_SLICES_PER_BLOCK;
 	     ++slice) {

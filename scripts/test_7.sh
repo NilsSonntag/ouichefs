@@ -7,10 +7,15 @@ MOD=../ouichefs/ouichefs.ko
 SYSFS=/sys/fs/ouichefs/loop0
 IOCTL_HELPER=./ioctl_dump
 
+# functions
+cleanup() {
+  umount $MNT 2>/dev/null || true
+  rmmod $MOD 2>/dev/null || true
+}
+trap cleanup EXIT
+
 fail() {
   echo "Test FAILED: $1"
-  sudo umount "$MNT" || true
-  sudo rmmod "$MOD" || true
   exit 1
 }
 
@@ -25,18 +30,33 @@ assert_eq() {
   fi
 }
 
-sudo insmod $MOD
-sudo mount $DEV $MNT
+insmod $MOD
+mount $DEV $MNT
 
 # echo "===== 1.2: Read & Write ====="
-# echo -n "test123" >"$MNT/readtest"
+echo -n "readtest" >"$MNT/readtest"
 # sync
 # read=$(cat "$MNT/readtest")
 # assert_eq "$read" "test123" "1.2: Read & Write"
 
 echo "===== 1.4: Sysfs Checks ====="
-for item in free_blocks used_blocks sliced_blocks total_free_slices files small_files total_data_size total_used_size efficiency; do
-  assert_eq "$(cat $SYSFS/$item)" "$item"
+sysfs_asserts=(
+  "free_blocks:12543"
+  "used_blocks:1"
+  "sliced_blocks:1"
+  "total_free_slices:30"
+  "files:1"
+  "small_files:1"
+  "total_data_size:8"
+  "total_used_size:4096"
+  "efficiency:0"
+)
+
+for item in "${sysfs_asserts[@]}"; do
+  name="${item%%:*}"
+  expected="${item#*:}"
+  value=$(cat "$SYSFS/$name")
+  assert_eq "$value" "$expected" "$name"
 done
 
 echo "===== 1.5: Write Should Fail for >128 Bytes ====="
@@ -59,33 +79,31 @@ dd if=/dev/zero of=$MNT/bigfile bs=129 count=1 2>/dev/null && fail "1.5: Write >
 
 echo "===== 1.6: IOCTL Dump Block Slices ====="
 echo -n "test123" >"$MNT/ioctltest"
-$IOCTL_HELPER "$MNT/ioctltest" || fail "1.6: IOCTL dump failed"
+dump_bitmap="$($IOCTL_HELPER "$MNT/ioctltest" | head -n 1)"
+assert_eq $dump_bitmap "fffffff8" "Bitmap 2 files"
 echo -n "file2" >"$MNT/file2"
 echo -n "456test" >"$MNT/file2"
-$IOCTL_HELPER "$MNT/file2" || fail "1.6: IOCTL dump for file2 failed"
+dump_bitmap="$($IOCTL_HELPER "$MNT/file2" | head -n 1)"
+assert_eq $dump_bitmap "fffffff0" "Bitmap 3 files"
 
 echo "===== 1.7: Deletion and Slice Reuse ====="
 echo -n "delete_me" >"$MNT/todelete"
-# Get sysfs stats before deletion
-before_slices=$(cat $SYSFS/total_free_slices)
+before_free_slices=$(cat $SYSFS/total_free_slices)
 before_sliced_blocks=$(cat $SYSFS/sliced_blocks)
+assert_eq $before_free_slices 27 "Free slices before deletion"
+assert_eq $before_sliced_blocks 1 "Sliced blocks before deletion"
 rm "$MNT/todelete"
 sync
-# After deletion, free slices count should increase, possibly sliced_blocks decrease if block is fully freed.
-after_slices=$(cat $SYSFS/total_free_slices)
+after_free_slices=$(cat $SYSFS/total_free_slices)
 after_sliced_blocks=$(cat $SYSFS/sliced_blocks)
-echo "Slices before: $before_slices, after: $after_slices"
-echo "Sliced blocks before: $before_sliced_blocks, after: $after_sliced_blocks"
-if [ "$after_slices" -le "$before_slices" ]; then
-  fail "1.7: Slices not freed on file deletion"
-fi
+assert_eq $after_free_slices 28 "Free slices after deletion"
+assert_eq $after_sliced_blocks 1 "Sliced blocks after deletion"
 
 # Try creating a new file and ensure it reuses freed slice
 echo -n "reuse" >"$MNT/reusefile"
-$IOCTL_HELPER "$MNT/reusefile" || fail "1.7: IOCTL after slice reuse failed"
+dump_bitmap="$($IOCTL_HELPER "$MNT/reusefile" | head -n 1)"
+assert_eq $dump_bitmap "ffffffe0" "Bitmap after delete"
 
-# Clean up
-sudo umount $MNT
-sudo rmmod $MOD
+cleanup
 
 echo "OuicheFS tests completed."
