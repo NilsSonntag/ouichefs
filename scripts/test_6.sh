@@ -45,6 +45,7 @@ dd if=/dev/zero of=$MNT/bigfile bs=129 count=1 2>/dev/null && echo "ERROR: Write
 echo "===== 1.6: IOCTL Dump Block Slices ====="
 echo -n "test123" >"$MNT/ioctltest"
 echo -n "file2" >"$MNT/file2"
+echo -n "456test" >"$MNT/file2"
 $IOCTL_HELPER $MNT/ioctltest
 
 sudo umount $MNT
