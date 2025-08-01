@@ -46,7 +46,7 @@ echo "===== 1.6: IOCTL Dump Block Slices ====="
 echo -n "test123" >"$MNT/ioctltest"
 echo -n "file2" >"$MNT/file2"
 echo -n "456test" >"$MNT/file2"
-$IOCTL_HELPER $MNT/ioctltest
+$IOCTL_HELPER $MNT/file2
 
 sudo umount $MNT
 sudo rmmod $MOD

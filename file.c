@@ -77,30 +77,49 @@ static int ouichefs_open(struct inode *inode, struct file *file)
 	bool rdwr = (file->f_flags & O_RDWR) != 0;
 	bool trunc = (file->f_flags & O_TRUNC) != 0;
 
-	if ((wronly || rdwr) && trunc && (inode->i_size != 0)) {
-		struct super_block *sb = inode->i_sb;
-		struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
-		struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
-		struct ouichefs_file_index_block *index;
-		struct buffer_head *bh_index;
-		sector_t iblock;
+	if (!(wronly || rdwr) || !trunc || !(inode->i_size != 0))
+		return 0;
 
-		/* Read index block from disk */
-		bh_index = sb_bread(sb, ci->index_block);
-		if (!bh_index)
-			return -EIO;
-		index = (struct ouichefs_file_index_block *)bh_index->b_data;
+	struct super_block *sb = inode->i_sb;
+	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
+	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
+	struct buffer_head *bh;
+	sector_t block;
 
-		for (iblock = 0; index->blocks[iblock] != 0; iblock++) {
+	if (inode->i_size > OUICHEFS_SLICE_SIZE) {
+		block = ci->index_block;
+	} else {
+		block = ci->index_block & GENMASK(26, 0);
+	}
+
+	bh = sb_bread(sb, block);
+
+	if (!bh)
+		return -EIO;
+
+	if (inode->i_size > OUICHEFS_SLICE_SIZE) {
+		struct ouichefs_file_index_block *index =
+			(struct ouichefs_file_index_block *)bh->b_data;
+
+		for (sector_t iblock = 0; index->blocks[iblock] != 0;
+		     iblock++) {
 			put_block(sbi, le32_to_cpu(index->blocks[iblock]));
 			index->blocks[iblock] = 0;
 		}
-		inode->i_size = 0;
 		inode->i_blocks = 1;
-
-		mark_buffer_dirty(bh_index);
-		brelse(bh_index);
+	} else {
+		unsigned int slice = (ci->index_block >> 27) & GENMASK(4, 0);
+		struct ouichefs_sliced_block *s_block =
+			(struct ouichefs_sliced_block *)bh->b_data;
+		unsigned long bitmap =
+			le32_to_cpu(s_block->header.slice_bitmap);
+		bitmap_set(&bitmap, slice, 1);
+		s_block->header.slice_bitmap = cpu_to_le32(bitmap);
 	}
+	inode->i_size = 0;
+
+	mark_buffer_dirty(bh);
+	brelse(bh);
 
 	return 0;
 }
@@ -182,7 +201,6 @@ static int get_new_sliced_block(struct ouichefs_sb_info *sbi)
 static ssize_t ouichefs_write(struct file *file, const char __user *buf,
 			      size_t count, loff_t *ppos)
 {
-	pr_info("write is called");
 	// This part checks if the write will be able to complete and allocates the necessary blocks
 	struct inode *inode = file_inode(file);
 	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
@@ -198,15 +216,13 @@ static ssize_t ouichefs_write(struct file *file, const char __user *buf,
 	int err = 0;
 
 	// TODO: update for 1.8
-	if (pos + count > 128) {
-		pr_info("error big");
+	if (pos + count > 128)
 		return -EFBIG;
-	}
+
 	/* Check if the write can be completed (enough space?) */
-	if (pos + count > OUICHEFS_MAX_FILESIZE) {
-		pr_info("error spc");
+	if (pos + count > OUICHEFS_MAX_FILESIZE)
 		return -ENOSPC;
-	}
+
 	nr_allocs =
 		max(pos + count, (unsigned long long)file->f_inode->i_size) /
 		OUICHEFS_BLOCK_SIZE;
@@ -214,11 +230,8 @@ static ssize_t ouichefs_write(struct file *file, const char __user *buf,
 		nr_allocs -= file->f_inode->i_blocks - 1;
 	else
 		nr_allocs = 0;
-	pr_info("nr allocs: %u", nr_allocs);
-	if (nr_allocs > sbi->nr_free_blocks) {
-		pr_info("HTIS eror");
+	if (nr_allocs > sbi->nr_free_blocks)
 		return -ENOSPC;
-	}
 
 	// struct buffer_head *bh_res;
 	// sector_t iblock = pos / OUICHEFS_BLOCK_SIZE;
@@ -231,15 +244,12 @@ static ssize_t ouichefs_write(struct file *file, const char __user *buf,
 
 	/* check if there is already a slice */
 	uint32_t index = ci->index_block;
-	pr_info("index: %u", index);
 	if (index != 0) {
 		slice_to_write = (index >> 27) & GENMASK(4, 0);
 		sliced_block_nr = index & GENMASK(26, 0);
 		bh_write = sb_bread(sb, sliced_block_nr);
-		if (!bh_write) {
-			pr_info("hit this IO");
+		if (!bh_write)
 			return -EIO;
-		}
 
 		s_block = (struct ouichefs_sliced_block *)bh_write->b_data;
 	} else {
@@ -301,7 +311,6 @@ static ssize_t ouichefs_write(struct file *file, const char __user *buf,
 	inode->i_size = pos + bytes_to_write;
 	ci->index_block = (slice_to_write << 27) |
 			  sliced_block_nr; /* has 27 bits at max */
-	pr_info("index after write: %u", ci->index_block);
 
 	// inode->i_blocks = (roundup(inode->i_size, OUICHEFS_BLOCK_SIZE) /
 	// 		   OUICHEFS_BLOCK_SIZE) +
@@ -334,7 +343,6 @@ static ssize_t ouichefs_write(struct file *file, const char __user *buf,
 	// 	sync_dirty_buffer(bh_index);
 	// 	brelse(bh_index);
 	// }
-	pr_info("remove this");
 	return ret;
 }
 
