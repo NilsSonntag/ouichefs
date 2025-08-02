@@ -83,11 +83,12 @@ static ssize_t small_files_show(struct kobject *kobj,
 		inode = ouichefs_iget(sb, i);
 		if (!inode || IS_ERR(inode))
 			continue;
-		// if (2 <= i && i <= 3) {
-		// 	printk(KERN_INFO
-		// 	       "inode %u: nlink=%u, mode=%o, size=%llu\n",
-		// 	       i, inode->i_nlink, inode->i_mode, inode->i_size);
-		// }
+
+		if (1 <= i && i <= 3) {
+			printk(KERN_INFO
+			       "inode %u: nlink=%u, mode=%o, size=%llu\n",
+			       i, inode->i_nlink, inode->i_mode, inode->i_size);
+		}
 		if (S_ISREG(inode->i_mode) && inode->i_size > 0 &&
 		    inode->i_size < 128)
 			nr_small_files++;
