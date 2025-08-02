@@ -219,8 +219,9 @@ static int ouichefs_create(struct mnt_idmap *idmap, struct inode *dir,
 	struct inode *inode;
 	struct ouichefs_inode_info *ci_dir;
 	struct ouichefs_dir_block *dblock;
+	struct buffer_head *bh;
+	struct buffer_head *bh2;
 	char *fblock;
-	struct buffer_head *bh, *bh2;
 	int ret = 0, i;
 
 	/* Check filename length */
@@ -249,18 +250,24 @@ static int ouichefs_create(struct mnt_idmap *idmap, struct inode *dir,
 	}
 
 	/*
+	 * WARN: this was moved to write big file
+	 *
 	 * Scrub index_block for new file/directory to avoid previous data
 	 * messing with new file/directory.
 	 */
-	bh2 = sb_bread(sb, OUICHEFS_INODE(inode)->index_block);
-	if (!bh2) {
-		ret = -EIO;
-		goto iput;
+	if (S_ISDIR(inode->i_mode)) {
+		bh2 = sb_bread(sb, OUICHEFS_INODE(inode)->index_block);
+		if (!bh2) {
+			ret = -EIO;
+			goto iput;
+		}
+		fblock = (char *)bh2->b_data;
+		memset(fblock, 0, OUICHEFS_BLOCK_SIZE);
+		mark_buffer_dirty(bh2);
+		brelse(bh2);
+	} else {
+		OUICHEFS_INODE(inode)->index_block = 0;
 	}
-	fblock = (char *)bh2->b_data;
-	memset(fblock, 0, OUICHEFS_BLOCK_SIZE);
-	mark_buffer_dirty(bh2);
-	brelse(bh2);
 
 	/* Find first free slot in parent index and register new inode */
 	for (i = 0; i < OUICHEFS_MAX_SUBFILES; i++)
@@ -283,7 +290,6 @@ static int ouichefs_create(struct mnt_idmap *idmap, struct inode *dir,
 	d_instantiate(dentry, inode);
 
 	return 0;
-
 iput:
 	put_block(OUICHEFS_SB(sb), OUICHEFS_INODE(inode)->index_block);
 	put_inode(OUICHEFS_SB(sb), inode->i_ino);
@@ -379,6 +385,8 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 	 */
 	if (S_ISDIR(inode->i_mode)) {
 		bh = sb_bread(sb, bno);
+		if (!bh)
+			goto clean_inode;
 		file_block = (struct ouichefs_file_index_block *)bh->b_data;
 		goto scrub;
 	}
@@ -386,6 +394,10 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 		int slice = (bno >> 27) & GENMASK(4, 0);
 		sector_t block = bno & GENMASK(26, 0);
 
+		if (!block)
+			goto clean_inode;
+
+		pr_info("unlink block nr: %llu, and slice %d", block, slice);
 		bh = sb_bread(sb, block);
 		if (!bh)
 			goto clean_inode;
@@ -409,6 +421,7 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 			/* block completely empty */
 			memset(&s_block->header, 0, OUICHEFS_SLICE_SIZE);
 			remove_from_partial_list(sb, sbi, block, s_block);
+			sbi->nr_sliced_blocks--;
 			put_block(sbi, block);
 		} else {
 			s_block->header.slice_bitmap =
@@ -419,6 +432,8 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 	} else {
 		/* legacy block */
 		bh = sb_bread(sb, bno);
+		pr_info("file size: %lld", inode->i_size);
+		pr_info("block nr %u at %s:%d", bno, __FILE__, __LINE__);
 		if (!bh)
 			goto clean_inode;
 		file_block = (struct ouichefs_file_index_block *)bh->b_data;
@@ -459,7 +474,9 @@ clean_inode:
 		0;
 	inode->i_ctime.tv_nsec = inode->i_mtime.tv_nsec =
 		inode->i_atime.tv_nsec = 0;
+	pr_info("link count BEFORE dec: %u", inode->i_nlink);
 	inode_dec_link_count(inode);
+	pr_info("link count AFTER dec: %u", inode->i_nlink);
 	mark_inode_dirty(inode);
 	put_inode(sbi, ino);
 

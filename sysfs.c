@@ -70,15 +70,17 @@ static ssize_t files_show(struct kobject *kobj, struct kobj_attribute *attr,
 }
 
 // FIX: removing small files does not work
+// If this sysfs is printed while a file exist it wont disappear
 static ssize_t small_files_show(struct kobject *kobj,
 				struct kobj_attribute *attr, char *buf)
 {
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB_FROM_KOBJ(kobj);
 	struct super_block *sb = sbi->sb;
 	unsigned int nr_small_files = 0;
+	struct inode *inode;
 
 	for (unsigned int i = 1; i < sbi->nr_inodes; i++) {
-		struct inode *inode = ouichefs_iget(sb, i);
+		inode = ouichefs_iget(sb, i);
 		if (!inode || IS_ERR(inode))
 			continue;
 		// if (2 <= i && i <= 3) {
@@ -178,14 +180,12 @@ int ouichefs_sysfs_init(struct super_block *sb)
 		return -EFAULT;
 	}
 	return 0;
-
-	return sysfs_create_group(&sbi->sysfs_kobj, &ouichefs_attr_grp);
 }
 
 void ouichefs_sysfs_exit(struct super_block *sb)
 {
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 
-	// sysfs_remove_group(&sbi->sysfs_kobj, &ouichefs_attr_grp);
-	kobject_put(&sbi->sysfs_kobj);
+	if (sbi)
+		kobject_put(&sbi->sysfs_kobj);
 }
