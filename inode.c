@@ -250,10 +250,10 @@ static int ouichefs_create(struct mnt_idmap *idmap, struct inode *dir,
 	}
 
 	/*
-	 * WARN: this was moved to write big file
+	 * WARN: for files the srubbing was moved to write_big_file in file.c
 	 *
-	 * Scrub index_block for new file/directory to avoid previous data
-	 * messing with new file/directory.
+	 * Scrub index_block for new directory to avoid previous data
+	 * messing with new directory.
 	 */
 	if (S_ISDIR(inode->i_mode)) {
 		bh2 = sb_bread(sb, OUICHEFS_INODE(inode)->index_block);

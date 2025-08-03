@@ -80,7 +80,7 @@ static int ouichefs_open(struct inode *inode, struct file *file)
 	bool rdwr = (file->f_flags & O_RDWR) != 0;
 	bool trunc = (file->f_flags & O_TRUNC) != 0;
 
-	if (!(wronly || rdwr) || !trunc || !(inode->i_size != 0) ||
+	if (!(wronly || rdwr) || !trunc || inode->i_size == 0 ||
 	    inode->i_size <= OUICHEFS_SLICE_SIZE)
 		return 0;
 
@@ -111,43 +111,73 @@ static int ouichefs_open(struct inode *inode, struct file *file)
 	return 0;
 }
 
+static int ouichefs_get_buffer_head(struct inode *inode, loff_t pos,
+				    struct buffer_head **bh_res,
+				    unsigned int *slice)
+{
+	struct buffer_head init;
+	sector_t iblock;
+	sector_t block;
+
+	if (inode->i_size > OUICHEFS_SLICE_SIZE) {
+		/* find file data block for large file */
+		iblock = pos / OUICHEFS_BLOCK_SIZE;
+		int err = ouichefs_file_get_block(inode, iblock, &init, false);
+		if (err)
+			return err;
+
+		block = init.b_blocknr;
+		*slice = 0;
+	} else {
+		/* find slice and block for small file */
+		sector_t index = OUICHEFS_INODE(inode)->index_block;
+		if (index == 0)
+			return UNALLOCATED_BLOCK;
+
+		*slice = (index >> 27) & GENMASK(4, 0);
+		block = index & GENMASK(26, 0);
+	}
+
+	pr_info("block nr: %llu at file %s:%d", block, __FILE_NAME__, __LINE__);
+	*bh_res = sb_bread(inode->i_sb, block);
+	if (!*bh_res)
+		return -EIO;
+
+	return 0;
+}
+
 static ssize_t ouichefs_read(struct file *file, char __user *buf, size_t count,
 			     loff_t *offset)
 {
 	struct inode *inode = file_inode(file);
-	struct super_block *sb = inode->i_sb;
-	struct buffer_head *bh_res;
-	struct buffer_head *bh_read;
+	struct buffer_head *bh_read = NULL;
 	loff_t pos = *offset;
-	sector_t iblock = pos / OUICHEFS_BLOCK_SIZE;
+	unsigned int slice = 0;
 	ssize_t ret = 0;
 	int err = 0;
 
-	struct buffer_head init;
-	memset(&init, 0, sizeof(init));
-	bh_res = &init;
-	err = ouichefs_file_get_block(inode, iblock, bh_res, false);
-	if (err == UNALLOCATED_BLOCK) {
+	err = ouichefs_get_buffer_head(inode, pos, &bh_read, &slice);
+	if (err == UNALLOCATED_BLOCK)
 		return 0;
-	} else if (err < 0) {
+	if (err < 0)
 		return err;
-	}
 
-	// read from disk into buffer_head
-	pr_info("block nr: %llu at file %s:%d", bh_res->b_blocknr,
-		__FILE_NAME__, __LINE__);
-	bh_read = sb_bread(sb, bh_res->b_blocknr);
-	if (!bh_read)
-		return -EIO;
-
-	// copy to user space
 	loff_t block_offset = pos % OUICHEFS_BLOCK_SIZE;
 	size_t bytes_to_read =
-		min(count, (size_t)(OUICHEFS_BLOCK_SIZE - block_offset));
+		min3(count, (size_t)(OUICHEFS_BLOCK_SIZE - block_offset),
+		     (size_t)(inode->i_size - pos));
 	if (bytes_to_read == 0)
 		goto brelse_read;
 
-	err = copy_to_user(buf, bh_read->b_data + block_offset, bytes_to_read);
+	if (slice == 0) {
+		err = copy_to_user(buf, bh_read->b_data + block_offset,
+				   bytes_to_read);
+	} else {
+		struct ouichefs_sliced_block *s_block =
+			(struct ouichefs_sliced_block *)bh_read->b_data;
+		err = copy_to_user(buf, s_block->slices[slice] + block_offset,
+				   bytes_to_read);
+	}
 	if (err) {
 		ret = -EFAULT;
 		goto brelse_read;

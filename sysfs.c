@@ -74,6 +74,7 @@ static ssize_t files_show(struct kobject *kobj, struct kobj_attribute *attr,
 static ssize_t small_files_show(struct kobject *kobj,
 				struct kobj_attribute *attr, char *buf)
 {
+	return files_show(kobj, attr, buf); // HACK: this is the temp solution
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB_FROM_KOBJ(kobj);
 	struct super_block *sb = sbi->sb;
 	unsigned int nr_small_files = 0;
