@@ -360,6 +360,7 @@ static ssize_t ouichefs_write_small_file(struct file *file,
 	} else {
 		sliced_block_nr = sbi->s_free_sliced_blocks;
 		if (sliced_block_nr == 0) {
+			pr_info("alloc new sliced block");
 			err = get_new_sliced_block(sbi);
 			if (err < 0)
 				return err;
@@ -389,6 +390,8 @@ static ssize_t ouichefs_write_small_file(struct file *file,
 				le32_to_cpu(s_block->header.next_partial_block);
 		}
 	}
+	pr_info("write to block nr: %llu, and slice %u", sliced_block_nr,
+		slice_to_write);
 	loff_t offset = pos % OUICHEFS_BLOCK_SIZE;
 	size_t bytes_to_write =
 		min(count, (size_t)(OUICHEFS_BLOCK_SIZE - offset));
@@ -425,7 +428,6 @@ static ssize_t ouichefs_write(struct file *file, const char __user *buf,
 	if (*ppos + count > 128) {
 		return ouichefs_write_large_file(file, buf, count, ppos);
 	}
-	pr_info("write small? this is size: %llu", *ppos + count);
 	return ouichefs_write_small_file(file, buf, count, ppos);
 }
 

@@ -299,32 +299,57 @@ end:
 	return ret;
 }
 
-void remove_from_partial_list(struct super_block *sb,
-			      struct ouichefs_sb_info *sbi, sector_t block,
-			      struct ouichefs_sliced_block *s_block)
+int remove_from_partial_list(struct super_block *sb,
+			     struct ouichefs_sb_info *sbi, sector_t block,
+			     struct ouichefs_sliced_block *s_block)
 {
-	struct buffer_head *bh_iter = sb_bread(sb, sbi->s_free_sliced_blocks);
-	struct ouichefs_sliced_block *iter_block =
-		(struct ouichefs_sliced_block *)bh_iter->b_data;
-	sector_t next_partial_block =
-		le32_to_cpu(iter_block->header.next_partial_block);
-	while (next_partial_block != block && next_partial_block != 0) {
-		brelse(bh_iter);
-		bh_iter = sb_bread(sb, next_partial_block);
-		iter_block = (struct ouichefs_sliced_block *)bh_iter->b_data;
-		next_partial_block =
-			le32_to_cpu(iter_block->header.next_partial_block);
+	struct buffer_head *bh_prev;
+	struct ouichefs_sliced_block *prev_block;
+	sector_t iter_bno;
+	int ret = 0;
+
+	iter_bno = sbi->s_free_sliced_blocks;
+
+	if (iter_bno == 0) {
+		pr_err("Cant remove: partial list is empty");
+		return -ENOENT;
 	}
-	if (next_partial_block == block) {
-		iter_block->header.next_partial_block =
-			s_block->header.next_partial_block;
-		mark_buffer_dirty(bh_iter);
-	} else {
-		/* block to unlink is first in list (s_free_sliced_blocks) */
+
+	if (iter_bno == block) {
 		sbi->s_free_sliced_blocks =
 			le32_to_cpu(s_block->header.next_partial_block);
+		return 0;
 	}
-	brelse(bh_iter);
+
+	bh_prev = sb_bread(sb, iter_bno);
+	if (!bh_prev) {
+		pr_err("Cant read head block of partial list");
+		return -EIO;
+	}
+
+	prev_block = (struct ouichefs_sliced_block *)bh_prev->b_data;
+	iter_bno = le32_to_cpu(prev_block->header.next_partial_block);
+
+	while (iter_bno != block && iter_bno != 0) {
+		brelse(bh_prev);
+		bh_prev = sb_bread(sb, iter_bno);
+		if (!bh_prev) {
+			pr_err("Cant read head block of partial list");
+			return -EIO;
+		}
+		prev_block = (struct ouichefs_sliced_block *)bh_prev->b_data;
+		iter_bno = le32_to_cpu(prev_block->header.next_partial_block);
+	}
+	if (iter_bno == 0) {
+		pr_err("Block to remove is not in partial list");
+		ret = -ENOENT;
+	} else {
+		prev_block->header.next_partial_block =
+			s_block->header.next_partial_block;
+		mark_buffer_dirty(bh_prev);
+	}
+	brelse(bh_prev);
+	return ret;
 }
 
 /*
@@ -418,12 +443,20 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 
 		if (slice_bitmap ==
 		    GENMASK((OUICHEFS_SLICES_PER_BLOCK - 1), 1)) {
+			pr_info("block is empty");
 			/* block completely empty */
 			memset(&s_block->header, 0, OUICHEFS_SLICE_SIZE);
-			remove_from_partial_list(sb, sbi, block, s_block);
+			int err = remove_from_partial_list(sb, sbi, block,
+							   s_block);
+			if (err) {
+				brelse(bh);
+				return err;
+			}
+			pr_info("removed successfully from list");
 			sbi->nr_sliced_blocks--;
 			put_block(sbi, block);
 		} else {
+			pr_info("update bitmap");
 			s_block->header.slice_bitmap =
 				cpu_to_le32(slice_bitmap);
 		}
@@ -474,9 +507,7 @@ clean_inode:
 		0;
 	inode->i_ctime.tv_nsec = inode->i_mtime.tv_nsec =
 		inode->i_atime.tv_nsec = 0;
-	pr_info("link count BEFORE dec: %u", inode->i_nlink);
 	inode_dec_link_count(inode);
-	pr_info("link count AFTER dec: %u", inode->i_nlink);
 	mark_inode_dirty(inode);
 	put_inode(sbi, ino);
 
