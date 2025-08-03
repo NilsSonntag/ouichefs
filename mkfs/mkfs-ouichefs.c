@@ -44,6 +44,7 @@ struct ouichefs_superblock {
 
 	uint32_t nr_blocks; /* Total number of blocks (incl sb & inodes) */
 	uint32_t nr_inodes; /* Total number of inodes */
+	uint32_t nr_sliced_blocks; /* Total number of sliced blocks */
 
 	uint32_t nr_istore_blocks; /* Number of inode store blocks */
 	uint32_t nr_ifree_blocks; /* Number of free inodes bitmask blocks */
@@ -52,7 +53,9 @@ struct ouichefs_superblock {
 	uint32_t nr_free_inodes; /* Number of free inodes */
 	uint32_t nr_free_blocks; /* Number of free blocks */
 
-	char padding[4064]; /* Padding to match block size */
+	uint64_t s_free_sliced_blocks; /* Number of the first block in list of partially filled blocks, 0 = empty */
+
+	char padding[4048]; /* Padding to match block size */
 };
 
 struct ouichefs_file_index_block {
@@ -88,8 +91,10 @@ static struct ouichefs_superblock *write_superblock(int fd,
 {
 	int ret;
 	struct ouichefs_superblock *sb;
-	uint32_t nr_inodes = 0, nr_blocks = 0, nr_ifree_blocks = 0;
-	uint32_t nr_bfree_blocks = 0, nr_data_blocks = 0, nr_istore_blocks = 0;
+	uint32_t nr_inodes = 0, nr_blocks = 0, nr_sliced_blocks = 0,
+		 nr_ifree_blocks = 0, nr_bfree_blocks = 0, nr_data_blocks = 0,
+		 nr_istore_blocks = 0;
+	uint64_t s_free_sliced_blocks = 0;
 	uint32_t mod;
 
 	sb = malloc(sizeof(struct ouichefs_superblock));
@@ -111,11 +116,13 @@ static struct ouichefs_superblock *write_superblock(int fd,
 	sb->magic = htole32(OUICHEFS_MAGIC);
 	sb->nr_blocks = htole32(nr_blocks);
 	sb->nr_inodes = htole32(nr_inodes);
+	sb->nr_sliced_blocks = htole32(nr_sliced_blocks);
 	sb->nr_istore_blocks = htole32(nr_istore_blocks);
 	sb->nr_ifree_blocks = htole32(nr_ifree_blocks);
 	sb->nr_bfree_blocks = htole32(nr_bfree_blocks);
 	sb->nr_free_inodes = htole32(nr_inodes - 1);
 	sb->nr_free_blocks = htole32(nr_data_blocks - 1);
+	sb->s_free_sliced_blocks = htole64(s_free_sliced_blocks);
 
 	ret = write(fd, sb, sizeof(struct ouichefs_superblock));
 	if (ret != sizeof(struct ouichefs_superblock)) {
@@ -132,10 +139,10 @@ static struct ouichefs_superblock *write_superblock(int fd,
 	       "\tnr_free_inodes=%u\n"
 	       "\tnr_free_blocks=%u\n",
 	       sizeof(struct ouichefs_superblock), le32toh(sb->magic),
-		   le32toh(sb->nr_blocks), le32toh(sb->nr_inodes),
-		   le32toh(sb->nr_istore_blocks),
-		   le32toh(sb->nr_ifree_blocks), le32toh(sb->nr_bfree_blocks),
-		   le32toh(sb->nr_free_inodes), le32toh(sb->nr_free_blocks));
+	       le32toh(sb->nr_blocks), le32toh(sb->nr_inodes),
+	       le32toh(sb->nr_istore_blocks), le32toh(sb->nr_ifree_blocks),
+	       le32toh(sb->nr_bfree_blocks), le32toh(sb->nr_free_inodes),
+	       le32toh(sb->nr_free_blocks));
 
 	return sb;
 }

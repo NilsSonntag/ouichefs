@@ -110,13 +110,13 @@ static int sync_sb_info(struct super_block *sb, int wait)
 
 	disk_sb->nr_blocks = cpu_to_le32(sbi->nr_blocks);
 	disk_sb->nr_inodes = cpu_to_le32(sbi->nr_inodes);
-	// disk_sb->nr_sliced_blocks = cpu_to_le32(sbi->nr_sliced_blocks);
+	disk_sb->nr_sliced_blocks = cpu_to_le32(sbi->nr_sliced_blocks);
 	disk_sb->nr_istore_blocks = cpu_to_le32(sbi->nr_istore_blocks);
 	disk_sb->nr_ifree_blocks = cpu_to_le32(sbi->nr_ifree_blocks);
 	disk_sb->nr_bfree_blocks = cpu_to_le32(sbi->nr_bfree_blocks);
 	disk_sb->nr_free_inodes = cpu_to_le32(sbi->nr_free_inodes);
 	disk_sb->nr_free_blocks = cpu_to_le32(sbi->nr_free_blocks);
-	// disk_sb->s_free_sliced_blocks = cpu_to_le32(sbi->s_free_sliced_blocks);
+	disk_sb->s_free_sliced_blocks = cpu_to_le64(sbi->s_free_sliced_blocks);
 
 	mark_buffer_dirty(bh);
 	if (wait)
@@ -257,8 +257,6 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 	csb = (struct ouichefs_sb_info *)bh->b_data;
 
 	/* Check magic number */
-	pr_info("MR is: %u, and should be: %lu", le32_to_cpu(csb->magic),
-		sb->s_magic);
 	if (le32_to_cpu(csb->magic) != sb->s_magic) {
 		pr_err("Wrong magic number\n");
 		brelse(bh);
@@ -279,6 +277,7 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 	sbi->nr_bfree_blocks = le32_to_cpu(csb->nr_bfree_blocks);
 	sbi->nr_free_inodes = le32_to_cpu(csb->nr_free_inodes);
 	sbi->nr_free_blocks = le32_to_cpu(csb->nr_free_blocks);
+	sbi->s_free_sliced_blocks = le64_to_cpu(csb->s_free_sliced_blocks);
 	sbi->sb = sb;
 	sb->s_fs_info = sbi;
 

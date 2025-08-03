@@ -68,6 +68,7 @@ struct ouichefs_sb_info {
 
 	uint32_t nr_blocks; /* Total number of blocks (incl sb & inodes) */
 	uint32_t nr_inodes; /* Total number of inodes */
+	uint32_t nr_sliced_blocks; /* Total number of sliced blocks */
 
 	uint32_t nr_istore_blocks; /* Number of inode store blocks */
 	uint32_t nr_ifree_blocks; /* Number of inode free bitmap blocks */
@@ -76,8 +77,7 @@ struct ouichefs_sb_info {
 	uint32_t nr_free_inodes; /* Number of free inodes */
 	uint32_t nr_free_blocks; /* Number of free blocks */
 
-	uint32_t nr_sliced_blocks; /* Total number of sliced blocks */
-	sector_t s_free_sliced_blocks; /* Number of the first block in list of partially filled blocks, 0 = empty */
+	uint64_t s_free_sliced_blocks; /* Number of the first block in list of partially filled blocks, 0 = empty */
 
 	unsigned long *ifree_bitmap; /* In-memory free inodes bitmap */
 	unsigned long *bfree_bitmap; /* In-memory free blocks bitmap */
@@ -100,7 +100,7 @@ struct ouichefs_dir_block {
 struct ouichefs_sliced_block_header {
 	__le32 slice_bitmap; /* Availibility of slice (1 for free, 0 for occupied) */
 	__le32 next_partial_block; /* Block number of next partially filled block, 0 = last */
-	char reserved[120];
+	char padding[120];
 } __attribute__((packed));
 
 struct ouichefs_sliced_block {
