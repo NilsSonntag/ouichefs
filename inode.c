@@ -13,6 +13,7 @@
 #include <linux/slab.h>
 
 #include "ouichefs.h"
+#include "slice.h"
 #include "bitmap.h"
 
 static const struct inode_operations ouichefs_inode_ops;
@@ -299,59 +300,6 @@ end:
 	return ret;
 }
 
-int remove_from_partial_list(struct super_block *sb,
-			     struct ouichefs_sb_info *sbi, sector_t block,
-			     struct ouichefs_sliced_block *s_block)
-{
-	struct buffer_head *bh_prev;
-	struct ouichefs_sliced_block *prev_block;
-	sector_t iter_bno;
-	int ret = 0;
-
-	iter_bno = sbi->s_free_sliced_blocks;
-
-	if (iter_bno == 0) {
-		pr_err("Cant remove: partial list is empty");
-		return -ENOENT;
-	}
-
-	if (iter_bno == block) {
-		sbi->s_free_sliced_blocks =
-			le32_to_cpu(s_block->header.next_partial_block);
-		return 0;
-	}
-
-	bh_prev = sb_bread(sb, iter_bno);
-	if (!bh_prev) {
-		pr_err("Cant read head block of partial list");
-		return -EIO;
-	}
-
-	prev_block = (struct ouichefs_sliced_block *)bh_prev->b_data;
-	iter_bno = le32_to_cpu(prev_block->header.next_partial_block);
-
-	while (iter_bno != block && iter_bno != 0) {
-		brelse(bh_prev);
-		bh_prev = sb_bread(sb, iter_bno);
-		if (!bh_prev) {
-			pr_err("Cant read head block of partial list");
-			return -EIO;
-		}
-		prev_block = (struct ouichefs_sliced_block *)bh_prev->b_data;
-		iter_bno = le32_to_cpu(prev_block->header.next_partial_block);
-	}
-	if (iter_bno == 0) {
-		pr_err("Block to remove is not in partial list");
-		ret = -ENOENT;
-	} else {
-		prev_block->header.next_partial_block =
-			s_block->header.next_partial_block;
-		mark_buffer_dirty(bh_prev);
-	}
-	brelse(bh_prev);
-	return ret;
-}
-
 /*
  * Remove a link for a file. If link count is 0, destroy file in this way:
  *   - remove the file from its parent directory.
@@ -415,53 +363,10 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 		file_block = (struct ouichefs_file_index_block *)bh->b_data;
 		goto scrub;
 	}
-	if (inode->i_size <= OUICHEFS_SLICE_SIZE) {
-		int slice = (bno >> 27) & GENMASK(4, 0);
-		sector_t block = bno & GENMASK(26, 0);
-
-		if (!block)
+	if (!is_large_file(inode->i_size)) {
+		if (free_sliced_file(inode))
 			goto clean_inode;
 
-		pr_info("unlink block nr: %llu, and slice %d", block, slice);
-		bh = sb_bread(sb, block);
-		if (!bh)
-			goto clean_inode;
-
-		struct ouichefs_sliced_block *s_block =
-			(struct ouichefs_sliced_block *)bh->b_data;
-		unsigned long slice_bitmap =
-			le32_to_cpu(s_block->header.slice_bitmap);
-
-		if (slice_bitmap == 0) {
-			s_block->header.next_partial_block =
-				cpu_to_le32(sbi->s_free_sliced_blocks);
-			sbi->s_free_sliced_blocks = block;
-		}
-
-		bitmap_set(&slice_bitmap, slice, 1);
-		memset(s_block->slices[slice], 0, OUICHEFS_SLICE_SIZE);
-
-		if (slice_bitmap ==
-		    GENMASK((OUICHEFS_SLICES_PER_BLOCK - 1), 1)) {
-			pr_info("block is empty");
-			/* block completely empty */
-			memset(&s_block->header, 0, OUICHEFS_SLICE_SIZE);
-			int err = remove_from_partial_list(sb, sbi, block,
-							   s_block);
-			if (err) {
-				brelse(bh);
-				return err;
-			}
-			pr_info("removed successfully from list");
-			sbi->nr_sliced_blocks--;
-			put_block(sbi, block);
-		} else {
-			pr_info("update bitmap");
-			s_block->header.slice_bitmap =
-				cpu_to_le32(slice_bitmap);
-		}
-		mark_buffer_dirty(bh);
-		brelse(bh);
 	} else {
 		/* legacy block */
 		bh = sb_bread(sb, bno);

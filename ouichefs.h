@@ -20,8 +20,10 @@
 
 #define OUICHEFS_SLICES_PER_BLOCK 32
 #define OUICHEFS_SLICE_SIZE (OUICHEFS_BLOCK_SIZE / OUICHEFS_SLICES_PER_BLOCK)
-#define OUICHEFS_SMALL_FILE_SIZE \
-	(OUICHEFS_BLOCK_SIZE - OUICHEFS_SLICE_SIZE) /* for metadata slice */
+#define OUICHEFS_SMALL_FILE_SIZE OUICHEFS_SLICE_SIZE
+// (OUICHEFS_BLOCK_SIZE - OUICHEFS_SLICE_SIZE) /* for metadata slice */
+
+#define RETURN_UNALLOCATED 601
 
 /*
  * ouiche_fs partition layout
@@ -144,4 +146,19 @@ OUICHEFS_SB_FROM_KOBJ(struct kobject *kobj)
 {
 	return container_of(kobj, struct ouichefs_sb_info, sysfs_kobj);
 }
+
+static inline bool is_large_file(size_t size)
+{
+	return size > OUICHEFS_SMALL_FILE_SIZE;
+}
+
+/* Returns ceil(a/b) */
+static inline uint32_t idiv_ceil(uint32_t a, uint32_t b)
+{
+	uint32_t ret = a / b;
+	if (a % b != 0)
+		return ret + 1;
+	return ret;
+}
+
 #endif /* _OUICHEFS_H */
