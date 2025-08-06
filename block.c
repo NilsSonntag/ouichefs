@@ -26,7 +26,7 @@
  *         -ENOSPC if no free blocks are available, or -EIO on I/O error.
  */
 static int ouichefs_file_get_block(struct inode *inode, sector_t iblock,
-			    sector_t *block, int create)
+				   sector_t *block, int create)
 {
 	struct super_block *sb = inode->i_sb;
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);

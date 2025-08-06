@@ -129,8 +129,8 @@ static int get_new_sliced_block(struct ouichefs_sb_info *sbi)
  * Return: 0 on success, negative error code on failure.
  */
 static int alloc_slices(struct inode *inode, sector_t *res_bno,
-		 unsigned int *res_slice, struct buffer_head **bh,
-		 uint32_t nr_slices)
+			unsigned int *res_slice, struct buffer_head **bh,
+			uint32_t nr_slices)
 {
 	struct super_block *sb = inode->i_sb;
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
@@ -224,8 +224,8 @@ static int file_get_first_slice(struct inode *inode, sector_t *sliced_block_nr,
  * Context: Caller must release the buffer_head with brelse().
  * Return: 0 on success, negative error code on failure.
  */
-int read_sliced_get_start(struct inode *inode, loff_t pos, struct buffer_head **bh,
-		     char **start)
+int read_sliced_get_start(struct inode *inode, loff_t pos,
+			  struct buffer_head **bh, char **start)
 {
 	struct super_block *sb = inode->i_sb;
 	struct ouichefs_sliced_block *s_block;
@@ -245,7 +245,6 @@ int read_sliced_get_start(struct inode *inode, loff_t pos, struct buffer_head **
 
 	return 0;
 }
-
 
 /**
  * write_sliced_get_start - Get pointer to start of slice for writing.
@@ -451,7 +450,9 @@ int free_sliced_file(struct inode *inode)
 
 	uint32_t nr_slices = idiv_ceil(inode->i_size, OUICHEFS_SLICE_SIZE);
 
-	put_slices(inode->i_sb, block, slice, nr_slices); /* Ignore error, but can result in data space loss */
+	put_slices(
+		inode->i_sb, block, slice,
+		nr_slices); /* Ignore error, but can result in data space loss */
 
 	pr_debug("unlink in block nr: %llu, for slice %d", block, slice);
 	return 0;

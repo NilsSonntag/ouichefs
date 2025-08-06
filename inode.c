@@ -167,7 +167,7 @@ static struct inode *ouichefs_new_inode(struct inode *dir, mode_t mode)
 
 	/* Get a new free inode */
 	ino = get_free_inode(sbi);
-	if (!ino) 
+	if (!ino)
 		return ERR_PTR(-ENOSPC);
 
 	inode = ouichefs_iget(sb, ino);
@@ -328,7 +328,7 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 
 	/* Read parent directory index */
 	bh = sb_bread(sb, OUICHEFS_INODE(dir)->index_block);
-	if (!bh) 
+	if (!bh)
 		return -EIO;
 	dir_block = (struct ouichefs_dir_block *)bh->b_data;
 
