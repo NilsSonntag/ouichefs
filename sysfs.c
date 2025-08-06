@@ -6,28 +6,31 @@
 
 struct kobject *ouichefs_sysfs_dir;
 
+/* Show functions for virtual file system */
+
+/* Number of free blocks */
 static ssize_t free_blocks_show(struct kobject *kobj,
 				struct kobj_attribute *attr, char *buf)
 {
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB_FROM_KOBJ(kobj);
 	return snprintf(buf, PAGE_SIZE, "%u\n", sbi->nr_free_blocks);
 }
-
+/* Helper to count used blocks */
 static unsigned int get_used_blocks(struct ouichefs_sb_info *sbi)
 {
 	unsigned int nr_data_blocks =
-		sbi->nr_blocks - 1 /* superblock */ - sbi->nr_istore_blocks -
+		sbi->nr_blocks - 1 /* Superblock */ - sbi->nr_istore_blocks -
 		sbi->nr_ifree_blocks - sbi->nr_bfree_blocks;
-	return nr_data_blocks - sbi->nr_free_blocks - 1 /* root index block */;
+	return nr_data_blocks - sbi->nr_free_blocks - 1 /* Root index block */;
 }
-
+/* Number of used blocks (sliced or not) */
 static ssize_t used_blocks_show(struct kobject *kobj,
 				struct kobj_attribute *attr, char *buf)
 {
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB_FROM_KOBJ(kobj);
 	return snprintf(buf, PAGE_SIZE, "%u\n", get_used_blocks(sbi));
 }
-
+/* Number of sliced blocks */
 static ssize_t sliced_blocks_show(struct kobject *kobj,
 				  struct kobj_attribute *attr, char *buf)
 {
@@ -35,18 +38,19 @@ static ssize_t sliced_blocks_show(struct kobject *kobj,
 	return snprintf(buf, PAGE_SIZE, "%u\n", sbi->nr_sliced_blocks);
 }
 
+/* The total number of free slices (in partially filled blocks) */
 static ssize_t total_free_slices_show(struct kobject *kobj,
 				      struct kobj_attribute *attr, char *buf)
 {
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB_FROM_KOBJ(kobj);
 	struct super_block *sb = sbi->sb;
 	struct buffer_head *bh;
-	sector_t curr; /* iterator */
+	sector_t curr; /* Iterator */
 	unsigned long total_free_slices = 0;
 
 	curr = sbi->s_free_sliced_blocks;
 	while (curr != 0) {
-		// get free slices per block
+		/* Get free slices per block */
 		bh = sb_bread(sb, curr);
 		if (!bh)
 			return -EIO;
@@ -54,23 +58,23 @@ static ssize_t total_free_slices_show(struct kobject *kobj,
 			(struct ouichefs_sliced_block *)bh->b_data;
 		struct ouichefs_sliced_block_header s_header = s_block->header;
 		total_free_slices += hweight32(s_header.slice_bitmap);
-		// increment iterator
+		/* Increment iterator */
 		curr = s_header.next_partial_block;
 		brelse(bh);
 	}
 
 	return snprintf(buf, PAGE_SIZE, "%lu\n", total_free_slices);
 }
-
+/* Number of files */
 static ssize_t files_show(struct kobject *kobj, struct kobj_attribute *attr,
 			  char *buf)
 {
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB_FROM_KOBJ(kobj);
 	unsigned int files =
-		sbi->nr_inodes - sbi->nr_free_inodes - 1 /* root inode */;
+		sbi->nr_inodes - sbi->nr_free_inodes - 1 /* Root inode */;
 	return snprintf(buf, PAGE_SIZE, "%u\n", files);
 }
-
+/* Number of small files */
 static ssize_t small_files_show(struct kobject *kobj,
 				struct kobj_attribute *attr, char *buf)
 {
@@ -97,7 +101,7 @@ static ssize_t small_files_show(struct kobject *kobj,
 	}
 	return snprintf(buf, PAGE_SIZE, "%u\n", nr_small_files);
 }
-
+/* Helper to get the sum of all indoe sizes */
 static unsigned long long get_total_data_size(struct ouichefs_sb_info *sbi)
 {
 	struct super_block *sb = sbi->sb;
@@ -115,14 +119,14 @@ static unsigned long long get_total_data_size(struct ouichefs_sb_info *sbi)
 	}
 	return total_data_size;
 }
-
+/* Total size of the data in the file system (in bytes) */
 static ssize_t total_data_size_show(struct kobject *kobj,
 				    struct kobj_attribute *attr, char *buf)
 {
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB_FROM_KOBJ(kobj);
 	return snprintf(buf, PAGE_SIZE, "%llu\n", get_total_data_size(sbi));
 }
-
+/* Total size of the used blocks (in bytes) */
 static ssize_t total_used_size_show(struct kobject *kobj,
 				    struct kobj_attribute *attr, char *buf)
 {
@@ -130,7 +134,7 @@ static ssize_t total_used_size_show(struct kobject *kobj,
 	unsigned long used_size = get_used_blocks(sbi) * OUICHEFS_BLOCK_SIZE;
 	return snprintf(buf, PAGE_SIZE, "%lu\n", used_size);
 }
-
+/* Ratio of the total size of the data in the file system to the total size of the used blocks (in %) */
 static ssize_t efficiency_show(struct kobject *kobj,
 			       struct kobj_attribute *attr, char *buf)
 {
@@ -174,6 +178,7 @@ static struct kobj_type ouichefs_ktype = {
 	.default_groups = ouichefs_default_groups,
 };
 
+/* Initialize ouichefs sysfs entries for a superblock. */
 int ouichefs_sysfs_init(struct super_block *sb)
 {
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
@@ -185,6 +190,7 @@ int ouichefs_sysfs_init(struct super_block *sb)
 	return 0;
 }
 
+/* Remove ouichefs sysfs entries for a superblock. */
 void ouichefs_sysfs_exit(struct super_block *sb)
 {
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);

@@ -159,8 +159,7 @@ static int sync_bfree(struct super_block *sb, int wait)
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	struct buffer_head *bh;
 	int i, idx;
-
-	pr_info("called sync_bfree");
+	
 	mutex_lock(&sbi->bfree_lock);
 
 	/* Flush free blocks bitmask */

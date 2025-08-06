@@ -6,11 +6,12 @@
 #include <linux/buffer_head.h>
 
 #include "ouichefs.h"
-#include "slice.h"
 #include "bitmap.h"
 
+/* Slice allocation */
+
 /*
- * 
+ * Return: the largest sequence of free spaces in the given bitmap starting at start_at
  */
 static uint32_t get_size_of_gap(const uint32_t bitmap, const uint32_t start_at)
 {
@@ -22,12 +23,18 @@ static uint32_t get_size_of_gap(const uint32_t bitmap, const uint32_t start_at)
 	return gap;
 }
 
+/**
+ * update_largest_gap - Update the largest gap value in a slice bitmap.
+ * @bitmap: Slice bitmap.
+ * @largest_gap: Pointer to largest gap variable to update.
+ * Scans the bitmap and sets *@largest_gap to the largest free gap found.
+ */
 static void update_largest_gap(const unsigned long bitmap,
 			       uint32_t *largest_gap)
 {
 	uint32_t gap;
 
-	int i = 1; /* skip metadata slice */
+	int i = 1; /* Skip metadata slice */
 	while (i < OUICHEFS_SLICES_PER_BLOCK) {
 		i = find_next_bit(&bitmap, OUICHEFS_SLICES_PER_BLOCK, i);
 		gap = get_size_of_gap(bitmap, i);
@@ -39,21 +46,19 @@ static void update_largest_gap(const unsigned long bitmap,
 }
 
 /*
- * Return 0 if not enough free slices found (we assume that the first slice is never free
- * because of the metadata, thus allowing us to use 0 as an error value).
+ * Uses the best fit algorithm to find the a position of at least @needed size in the given bitmap.
+ * Return: 0 if not enough free slices found (assumes that the first slice is always metadata)
  */
 static int find_best_fit(const unsigned long bitmap, const uint32_t needed)
 {
-	if (!needed) {
-		pr_err("find_best_fit was called to find 0 slices");
+	if (!needed)
 		return -EINVAL;
-	}
 
 	uint32_t best_len = OUICHEFS_SLICES_PER_BLOCK;
 	int best_start = 0;
 	uint32_t gap;
 
-	int i = 1; /* skip metadata slice */
+	int i = 1; /* Skip metadata slice */
 	while (i <= OUICHEFS_SLICES_PER_BLOCK - needed) {
 		i = find_next_bit(&bitmap, OUICHEFS_SLICES_PER_BLOCK, i);
 		gap = get_size_of_gap(bitmap, i);
@@ -70,22 +75,27 @@ static int find_best_fit(const unsigned long bitmap, const uint32_t needed)
 	return best_start;
 }
 
+/**
+ * get_new_sliced_block - Allocate and initialize a new sliced block.
+ * @sbi: Filesystem superblock info.
+ *
+ * Allocates a new block, initializes its slice bitmap, and links it into
+ * the partial block list.
+ * Return: 0 on success, -ENOSPC or -EIO on error.
+ */
 static int get_new_sliced_block(struct ouichefs_sb_info *sbi)
 {
 	struct buffer_head *bh;
 	sector_t sliced_block_nr = get_free_block(sbi);
 
-	if (!sliced_block_nr) {
-		pr_err("ENOSPC at %s:%d", __FILE_NAME__, __LINE__);
+	if (!sliced_block_nr)
 		return -ENOSPC;
-	}
 
 	bh = sb_bread(sbi->sb, sliced_block_nr);
-	if (!bh) {
-		pr_err("We hit this EIO at %s:%d", __FILE_NAME__, __LINE__);
+	if (!bh)
 		return -EIO;
-	}
-	/* scrub new block */
+
+	/* Scrub new block */
 	memset((char *)bh->b_data, 0, OUICHEFS_BLOCK_SIZE);
 
 	struct ouichefs_sliced_block *s_block =
@@ -104,7 +114,21 @@ static int get_new_sliced_block(struct ouichefs_sb_info *sbi)
 	return 0;
 }
 
-int alloc_slices(struct inode *inode, sector_t *res_bno,
+/**
+ * alloc_slices - Allocate slices for an inode.
+ * @inode: Inode to allocate for.
+ * @res_bno: Pointer to return block number.
+ * @res_slice: Pointer to return starting slice.
+ * @bh: Pointer to buffer_head pointer for the block (caller must brelse).
+ * @nr_slices: Number of slices to allocate.
+ *
+ * Finds or allocates a sliced block with enough free slices, updates the bitmap,
+ * and sets the block and slice index.
+ * 
+ * Context: If a buffer_head is returned, caller must release it with brelse().
+ * Return: 0 on success, negative error code on failure.
+ */
+static int alloc_slices(struct inode *inode, sector_t *res_bno,
 		 unsigned int *res_slice, struct buffer_head **bh,
 		 uint32_t nr_slices)
 {
@@ -118,10 +142,8 @@ int alloc_slices(struct inode *inode, sector_t *res_bno,
 
 	while (*res_bno != 0) {
 		*bh = sb_bread(sb, *res_bno);
-		if (!(*bh)) {
-			pr_err("Hit EIO at %s:%d", __FILE_NAME__, __LINE__);
+		if (!(*bh))
 			return -EIO;
-		}
 
 		s_block = (struct ouichefs_sliced_block *)(*bh)->b_data;
 		largest_gap = le32_to_cpu(s_block->header.largest_gap);
@@ -132,16 +154,13 @@ int alloc_slices(struct inode *inode, sector_t *res_bno,
 		brelse(*bh);
 	}
 	if (*res_bno == 0) {
-		pr_info("alloc new sliced block");
 		int err = get_new_sliced_block(sbi);
 		if (err < 0)
 			return err;
 		*res_bno = sbi->s_free_sliced_blocks;
 		*bh = sb_bread(sb, *res_bno);
-		if (!(*bh)) {
-			pr_err("Hit EIO at %s:%d", __FILE_NAME__, __LINE__);
+		if (!(*bh))
 			return -EIO;
-		}
 		s_block = (struct ouichefs_sliced_block *)(*bh)->b_data;
 		new_block = true;
 	}
@@ -153,8 +172,6 @@ int alloc_slices(struct inode *inode, sector_t *res_bno,
 
 		if (*res_slice <= 0) {
 			brelse(*bh);
-			pr_err("largest_gap (%u) and bitmap were out of sync, could not find %u free slices",
-			       largest_gap, nr_slices);
 			return -EFAULT;
 		}
 	} else {
@@ -164,9 +181,7 @@ int alloc_slices(struct inode *inode, sector_t *res_bno,
 
 	bitmap_clear(&bitmap, *res_slice, nr_slices);
 
-	pr_info("bitmap val: %lu", bitmap);
 	if (bitmap == 0) {
-		pr_info("block %llu full", *res_bno);
 		sbi->s_free_sliced_blocks =
 			le32_to_cpu(s_block->header.next_partial_block);
 		s_block->header.largest_gap = 0;
@@ -174,8 +189,6 @@ int alloc_slices(struct inode *inode, sector_t *res_bno,
 		largest_gap = 0;
 		update_largest_gap(bitmap, &largest_gap);
 		s_block->header.largest_gap = cpu_to_le32(largest_gap);
-		pr_info("new largest_gap for block %llu is: %u", *res_bno,
-			largest_gap);
 	}
 
 	s_block->header.slice_bitmap = cpu_to_le32(bitmap);
@@ -183,11 +196,15 @@ int alloc_slices(struct inode *inode, sector_t *res_bno,
 	return 0;
 }
 
+/*
+ * Sets the sliced_block_nr and the slice for the given inode by setting the given pointers.
+ * Return: 0 on success, negative error if given file has no data
+ */
 static int file_get_first_slice(struct inode *inode, sector_t *sliced_block_nr,
 				uint32_t *slice)
 {
 	uint32_t index = OUICHEFS_INODE(inode)->index_block;
-	if (index == 0)
+	if (!index)
 		return -RETURN_UNALLOCATED;
 
 	*sliced_block_nr = index & GENMASK(26, 0);
@@ -196,7 +213,18 @@ static int file_get_first_slice(struct inode *inode, sector_t *sliced_block_nr,
 	return 0;
 }
 
-int sliced_get_start(struct inode *inode, loff_t pos, struct buffer_head **bh,
+/**
+ * sliced_get_start - Get pointer to start of slice for reading.
+ * @inode: Inode to read from.
+ * @pos: Position in file.
+ * @bh: Pointer to buffer_head pointer (caller must brelse).
+ * @start: Pointer to return slice data pointer.
+ *
+ * Returns a pointer to the start of the slice for reading.
+ * Context: Caller must release the buffer_head with brelse().
+ * Return: 0 on success, negative error code on failure.
+ */
+int read_sliced_get_start(struct inode *inode, loff_t pos, struct buffer_head **bh,
 		     char **start)
 {
 	struct super_block *sb = inode->i_sb;
@@ -209,10 +237,8 @@ int sliced_get_start(struct inode *inode, loff_t pos, struct buffer_head **bh,
 		return err;
 
 	*bh = sb_bread(sb, sliced_block_nr);
-	if (!(*bh)) {
-		pr_err("We hit this EIO at %s:%d", __FILE_NAME__, __LINE__);
+	if (!(*bh))
 		return -EIO;
-	}
 
 	s_block = (struct ouichefs_sliced_block *)(*bh)->b_data;
 	*start = s_block->slices[slice];
@@ -220,11 +246,24 @@ int sliced_get_start(struct inode *inode, loff_t pos, struct buffer_head **bh,
 	return 0;
 }
 
+
+/**
+ * write_sliced_get_start - Get pointer to start of slice for writing.
+ * @inode: Inode to write to.
+ * @pos: Position to write at.
+ * @count: Number of bytes to write.
+ * @bh: Pointer to buffer_head pointer (caller must brelse).
+ * @start: Pointer to return slice data pointer.
+ * @new_index_block: Pointer to return new index_block value.
+ *
+ * Allocates slices if needed and returns a pointer to the start of the slice for writing.
+ * Context: Caller must release the buffer_head with brelse().
+ * Return: 0 on success, negative error code on failure.
+ */
 int write_sliced_get_start(struct inode *inode, loff_t pos, size_t count,
 			   struct buffer_head **bh, char **start,
 			   sector_t *new_index_block)
 {
-	pr_info("write_sliced_get_start called");
 	struct ouichefs_sliced_block *s_block;
 	sector_t sliced_block_nr;
 	uint32_t slice;
@@ -246,7 +285,6 @@ alloc_new:
 		if (err)
 			return err;
 	} else {
-		/* ignore return, cant get UNALLOCATED when size > 0 */
 		err = file_get_first_slice(inode, &sliced_block_nr, &slice);
 		if (err) {
 			pr_err("got UNALLOCATED where it should not be possible");
@@ -256,19 +294,12 @@ alloc_new:
 
 	if (!(*bh)) {
 		*bh = sb_bread(inode->i_sb, sliced_block_nr);
-		if (!(*bh)) {
-			pr_err("We hit this EIO at %s:%d", __FILE_NAME__,
-			       __LINE__);
+		if (!(*bh))
 			return -EIO;
-		}
 	}
 
-	// TODO: where to put this?
-	/* WARN: block number is 27 bits max */
+	/* WARN: block number has 27 bits at max */
 	*new_index_block = (slice << 27) | sliced_block_nr;
-
-	pr_info("write to block no: %llu, at slice: %u", sliced_block_nr,
-		slice);
 
 	s_block = (struct ouichefs_sliced_block *)(*bh)->b_data;
 	*start = s_block->slices[slice];
@@ -276,6 +307,17 @@ alloc_new:
 	return 0;
 }
 
+/* Partial list handling */
+
+/**
+ * remove_from_partial_list - Remove a block from the list of partial blocks.
+ * @sb: Superblock.
+ * @block: Block number to remove.
+ * @s_block: Sliced block struct for @block.
+ *
+ * Unlinks @block from the partial block list.
+ * Return: 0 on success, negative error code on failure.
+ */
 int remove_from_partial_list(struct super_block *sb, sector_t block,
 			     struct ouichefs_sliced_block *s_block)
 {
@@ -287,10 +329,8 @@ int remove_from_partial_list(struct super_block *sb, sector_t block,
 
 	iter_bno = sbi->s_free_sliced_blocks;
 
-	if (iter_bno == 0) {
-		pr_err("Cant remove: partial list is empty");
+	if (!iter_bno)
 		return -ENOENT;
-	}
 
 	if (iter_bno == block) {
 		sbi->s_free_sliced_blocks =
@@ -299,26 +339,23 @@ int remove_from_partial_list(struct super_block *sb, sector_t block,
 	}
 
 	bh_prev = sb_bread(sb, iter_bno);
-	if (!bh_prev) {
-		pr_err("EIO: Cant read head block of partial list");
+	if (!bh_prev)
 		return -EIO;
-	}
 
 	prev_block = (struct ouichefs_sliced_block *)bh_prev->b_data;
 	iter_bno = le32_to_cpu(prev_block->header.next_partial_block);
 
+	/* Iterates through list of partial blocks till block or 0 is next */
 	while (iter_bno != block && iter_bno != 0) {
 		brelse(bh_prev);
 		bh_prev = sb_bread(sb, iter_bno);
-		if (!bh_prev) {
-			pr_err("EIO: Cant read head block of partial list");
+		if (!bh_prev)
 			return -EIO;
-		}
+
 		prev_block = (struct ouichefs_sliced_block *)bh_prev->b_data;
 		iter_bno = le32_to_cpu(prev_block->header.next_partial_block);
 	}
-	if (iter_bno == 0) {
-		pr_err("Block to remove is not in partial list");
+	if (!iter_bno) {
 		ret = -ENOENT;
 	} else {
 		prev_block->header.next_partial_block =
@@ -329,6 +366,9 @@ int remove_from_partial_list(struct super_block *sb, sector_t block,
 	return ret;
 }
 
+/*
+ * Add a block to the list of partial blocks
+ */
 static inline void add_to_partial_list(struct ouichefs_sb_info *sbi,
 				       struct ouichefs_sliced_block *s_block,
 				       sector_t block)
@@ -338,6 +378,18 @@ static inline void add_to_partial_list(struct ouichefs_sb_info *sbi,
 	sbi->s_free_sliced_blocks = block;
 }
 
+/* Releasing slices*/
+
+/**
+ * put_slices - Free slices in a block.
+ * @sb: Superblock.
+ * @block: Block number.
+ * @starting_slice: First slice to free.
+ * @nr_slices: Number of slices to free.
+ *
+ * Marks slices as free in the bitmap, clears their data, and updates the partial list.
+ * Return: 0 on success, negative error code on failure.
+ */
 int put_slices(struct super_block *sb, sector_t block, uint32_t starting_slice,
 	       uint32_t nr_slices)
 {
@@ -345,16 +397,14 @@ int put_slices(struct super_block *sb, sector_t block, uint32_t starting_slice,
 	struct buffer_head *bh;
 
 	bh = sb_bread(sb, block);
-	if (!bh) {
-		pr_err("Hit EIO at %s:%d", __FILE_NAME__, __LINE__);
+	if (!bh)
 		return -EIO;
-	}
 
 	struct ouichefs_sliced_block *s_block =
 		(struct ouichefs_sliced_block *)bh->b_data;
 	unsigned long slice_bitmap = le32_to_cpu(s_block->header.slice_bitmap);
 
-	if (slice_bitmap == 0) {
+	if (slice_bitmap == 0) { /* Slice was put from full block */
 		add_to_partial_list(sbi, s_block, block);
 	}
 
@@ -362,8 +412,8 @@ int put_slices(struct super_block *sb, sector_t block, uint32_t starting_slice,
 	memset(s_block->slices[starting_slice], 0,
 	       OUICHEFS_SLICE_SIZE * nr_slices);
 
+	/* If slice was last in block, put block */
 	if (slice_bitmap == GENMASK((OUICHEFS_SLICES_PER_BLOCK - 1), 1)) {
-		pr_info("block %llu is empty", block);
 		memset(&s_block->header, 0, OUICHEFS_SLICE_SIZE);
 		int err = remove_from_partial_list(sb, block, s_block);
 		if (err)
@@ -377,28 +427,32 @@ int put_slices(struct super_block *sb, sector_t block, uint32_t starting_slice,
 		s_block->header.slice_bitmap = cpu_to_le32(slice_bitmap);
 		s_block->header.largest_gap = cpu_to_le32(largest_gap);
 	}
-	pr_debug("%s:%d: freed %u slices, starting with %u in block %llu\n",
-		 __func__, __LINE__, nr_slices, starting_slice, block);
 
 	mark_buffer_dirty(bh);
 	brelse(bh);
 	return 0;
 }
 
+/**
+ * free_sliced_file - Free all slices for a file.
+ * @inode: Inode to free.
+ *
+ * Frees all slices associated with the file.
+ * Return: 0 on success, negative error code on failure.
+ */
 int free_sliced_file(struct inode *inode)
 {
 	sector_t block;
 	uint32_t slice;
-	int err;
 
-	err = file_get_first_slice(inode, &block, &slice);
+	int err = file_get_first_slice(inode, &block, &slice);
 	if (err)
 		return err;
 
 	uint32_t nr_slices = idiv_ceil(inode->i_size, OUICHEFS_SLICE_SIZE);
 
-	err = put_slices(inode->i_sb, block, slice, nr_slices);
+	put_slices(inode->i_sb, block, slice, nr_slices); /* Ignore error, but can result in data space loss */
 
-	pr_info("unlink block nr: %llu, and slice %d", block, slice);
+	pr_debug("unlink in block nr: %llu, for slice %d", block, slice);
 	return 0;
 }
