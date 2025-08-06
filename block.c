@@ -117,7 +117,8 @@ int large_get_start(struct inode *inode, loff_t pos, struct buffer_head **bh,
 	int err;
 
 	/* Check for existing index block, otherwise return UNALLOCATED or create one */
-	if (!OUICHEFS_INODE(inode)->index_block) {
+	if (!OUICHEFS_INODE(inode)->index_block ||
+	    !is_large_file(inode->i_size)) {
 		if (!create)
 			return -RETURN_UNALLOCATED;
 

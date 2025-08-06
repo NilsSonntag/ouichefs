@@ -142,7 +142,8 @@ static int sync_ifree(struct super_block *sb, int wait)
 			return -EIO;
 
 		copy_bitmap_to_le64((__le64 *)bh->b_data,
-			(void *)sbi->ifree_bitmap + i * OUICHEFS_BLOCK_SIZE);
+				    (void *)sbi->ifree_bitmap +
+					    i * OUICHEFS_BLOCK_SIZE);
 
 		mark_buffer_dirty(bh);
 		if (wait)
@@ -159,16 +160,21 @@ static int sync_bfree(struct super_block *sb, int wait)
 	struct buffer_head *bh;
 	int i, idx;
 
+	mutex_lock(&sbi->bfree_lock);
+
 	/* Flush free blocks bitmask */
 	for (i = 0; i < sbi->nr_bfree_blocks; i++) {
 		idx = sbi->nr_istore_blocks + sbi->nr_ifree_blocks + i + 1;
 
 		bh = sb_bread(sb, idx);
-		if (!bh)
+		if (!bh) {
+			mutex_unlock(&sbi->bfree_lock);
 			return -EIO;
+		}
 
 		copy_bitmap_to_le64((__le64 *)bh->b_data,
-			(void *)sbi->bfree_bitmap + i * OUICHEFS_BLOCK_SIZE);
+				    (void *)sbi->bfree_bitmap +
+					    i * OUICHEFS_BLOCK_SIZE);
 
 		mark_buffer_dirty(bh);
 		if (wait)
@@ -176,6 +182,7 @@ static int sync_bfree(struct super_block *sb, int wait)
 		brelse(bh);
 	}
 
+	mutex_unlock(&sbi->bfree_lock);
 	return 0;
 }
 
@@ -282,6 +289,9 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 
 	brelse(bh);
 
+	/* bfree mutex */
+	mutex_init(&sbi->bfree_lock);
+
 	/* Alloc and copy ifree_bitmap */
 	sbi->ifree_bitmap =
 		kzalloc(sbi->nr_ifree_blocks * OUICHEFS_BLOCK_SIZE, GFP_KERNEL);
@@ -298,7 +308,8 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 			goto free_ifree;
 		}
 
-		copy_bitmap_from_le64((void *)sbi->ifree_bitmap + i * OUICHEFS_BLOCK_SIZE,
+		copy_bitmap_from_le64((void *)sbi->ifree_bitmap +
+					      i * OUICHEFS_BLOCK_SIZE,
 				      (__le64 *)bh->b_data);
 
 		brelse(bh);
@@ -320,13 +331,14 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 			goto free_bfree;
 		}
 
-		copy_bitmap_from_le64((void *)sbi->bfree_bitmap + i * OUICHEFS_BLOCK_SIZE,
+		copy_bitmap_from_le64((void *)sbi->bfree_bitmap +
+					      i * OUICHEFS_BLOCK_SIZE,
 				      (__le64 *)bh->b_data);
 
 		brelse(bh);
 	}
 
-	/* 
+	/*
 	 * Create root inode.
 	 *
 	 * 1 is used instead of 0 to stay compatible with userspace applications,

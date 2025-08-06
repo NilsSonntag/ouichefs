@@ -347,7 +347,7 @@ static int write_data_blocks(int fd, struct ouichefs_superblock *sb)
 }
 
 /** Retrieve the size of a block device.
- * 
+ *
  * @param[in] fd open file descriptor of the block device 
  * @param[out] size the size of the device in bytes
  * @return 0 on success. -1 on failure with errno set.

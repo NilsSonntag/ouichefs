@@ -18,6 +18,10 @@
 #define OUICHEFS_FILENAME_LEN 28
 #define OUICHEFS_MAX_SUBFILES 128
 
+#define OUICHEFS_SLICES_PER_BLOCK 32
+#define OUICHEFS_SLICE_SIZE (OUICHEFS_BLOCK_SIZE / OUICHEFS_SLICES_PER_BLOCK)
+#define OUICHEFS_SMALL_FILE_SIZE 128
+
 #define RETURN_UNALLOCATED 601
 
 /*
@@ -83,6 +87,7 @@ struct ouichefs_sb_info {
 
 	struct super_block *sb; /* Reference to on-disk super_block */
 	struct kobject sysfs_kobj; /* for the <partition> folder in /sys/fs/ */
+	struct mutex bfree_lock; /* Locks bfree bitmap operations */
 };
 
 struct ouichefs_file_index_block {
@@ -127,9 +132,24 @@ int large_get_start(struct inode *inode, loff_t pos, struct buffer_head **bh,
 		    char **start, bool create);
 void shrink_multiblock_file(struct file *file);
 
+/* slice functions */
+int read_sliced_get_start(struct inode *inode, loff_t pos,
+			  struct buffer_head **bh, char **start);
+int write_sliced_get_start(struct inode *inode, loff_t pos, size_t count,
+			   struct buffer_head **bh, char **start,
+			   sector_t *new_index_block);
+int free_sliced_file(struct inode *inode);
+int put_slices(struct super_block *sb, sector_t block, uint32_t starting_slice);
+int remove_from_partial_list(struct super_block *sb, sector_t block,
+			     struct ouichefs_sliced_block *s_block);
+
 /* file functions */
 extern const struct file_operations ouichefs_file_ops;
 extern const struct file_operations ouichefs_dir_ops;
+
+/* ioctl commmands */
+#define DUMP_BLOCK \
+	_IOR('D', 1, char[OUICHEFS_BLOCK_SIZE + OUICHEFS_SLICES_PER_BLOCK + 1])
 
 /* Getters for superbock and inode */
 #define OUICHEFS_SB(sb) (sb->s_fs_info)
@@ -142,6 +162,19 @@ static inline struct ouichefs_sb_info *
 OUICHEFS_SB_FROM_KOBJ(struct kobject *kobj)
 {
 	return container_of(kobj, struct ouichefs_sb_info, sysfs_kobj);
+}
+
+static inline bool is_large_file(size_t size)
+{
+	return size > OUICHEFS_SMALL_FILE_SIZE;
+}
+
+static inline uint32_t idiv_ceil(uint32_t a, uint32_t b)
+{
+	uint32_t ret = a / b;
+	if (a % b != 0)
+		return ret + 1;
+	return ret;
 }
 
 static inline uint32_t nr_necessary_blocks(size_t size)

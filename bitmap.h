@@ -17,8 +17,8 @@
  * because of the superblock and the root inode, thus allowing us to use 0 as an
  * error value).
  */
-static inline uint32_t get_first_free_bit(unsigned long *freemap,
-					  unsigned long size)
+static inline uint32_t get_first_free_bit_and_clear(unsigned long *freemap,
+						    unsigned long size)
 {
 	uint32_t ino;
 
@@ -39,7 +39,7 @@ static inline uint32_t get_free_inode(struct ouichefs_sb_info *sbi)
 {
 	uint32_t ret;
 
-	ret = get_first_free_bit(sbi->ifree_bitmap, sbi->nr_inodes);
+	ret = get_first_free_bit_and_clear(sbi->ifree_bitmap, sbi->nr_inodes);
 	if (ret) {
 		sbi->nr_free_inodes--;
 		pr_debug("%s:%d: allocated inode %u\n", __func__, __LINE__,
@@ -56,12 +56,15 @@ static inline uint32_t get_free_block(struct ouichefs_sb_info *sbi)
 {
 	uint32_t ret;
 
-	ret = get_first_free_bit(sbi->bfree_bitmap, sbi->nr_blocks);
+	mutex_lock(&sbi->bfree_lock);
+	ret = get_first_free_bit_and_clear(sbi->bfree_bitmap, sbi->nr_blocks);
 	if (ret) {
 		sbi->nr_free_blocks--;
 		pr_debug("%s:%d: allocated block %u\n", __func__, __LINE__,
 			 ret);
 	}
+
+	mutex_unlock(&sbi->bfree_lock);
 	return ret;
 }
 
@@ -97,10 +100,14 @@ static inline void put_inode(struct ouichefs_sb_info *sbi, uint32_t ino)
  */
 static inline void put_block(struct ouichefs_sb_info *sbi, uint32_t bno)
 {
-	if (put_free_bit(sbi->bfree_bitmap, sbi->nr_blocks, bno))
+	mutex_lock(&sbi->bfree_lock);
+	if (put_free_bit(sbi->bfree_bitmap, sbi->nr_blocks, bno)) {
+		mutex_unlock(&sbi->bfree_lock);
 		return;
+	}
 
 	sbi->nr_free_blocks++;
+	mutex_unlock(&sbi->bfree_lock);
 	pr_debug("%s:%d: freed block %u\n", __func__, __LINE__, bno);
 }
 
@@ -128,7 +135,8 @@ static inline void copy_bitmap_to_le64(__le64 *dst, unsigned long *src)
 #if BITS_PER_LONG == 64
 		dst[i] = cpu_to_le64(src[i]);
 #elif BITS_PER_LONG == 32
-		dst[i] = cpu_to_le64(((uint64_t)src[(i << 1) + 1] << 32) | src[i << 1]);
+		dst[i] = cpu_to_le64(((uint64_t)src[(i << 1) + 1] << 32) |
+				     src[i << 1]);
 #else
 #error Unsupported long size.
 #endif

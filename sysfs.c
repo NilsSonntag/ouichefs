@@ -89,7 +89,8 @@ static ssize_t small_files_show(struct kobject *kobj,
 			continue;
 
 		if (inode->i_nlink > 0 && S_ISREG(inode->i_mode) &&
-		    inode->i_size > 0 && inode->i_size <= 128)
+		    inode->i_size > 0 &&
+		    inode->i_size <= OUICHEFS_SMALL_FILE_SIZE)
 			nr_small_files++;
 		iput(inode);
 	}

@@ -35,6 +35,9 @@ struct inode *ouichefs_iget(struct super_block *sb, unsigned long ino)
 	if (ino >= sbi->nr_inodes)
 		return ERR_PTR(-EINVAL);
 
+	if (test_bit(ino, sbi->ifree_bitmap))
+		return ERR_PTR(-ENOENT);
+
 	/* Get a locked inode from Linux */
 	inode = iget_locked(sb, ino);
 	if (!inode)
@@ -115,6 +118,7 @@ static struct dentry *ouichefs_lookup(struct inode *dir, struct dentry *dentry,
 	bh = sb_bread(sb, ci_dir->index_block);
 	if (!bh)
 		return ERR_PTR(-EIO);
+
 	dblock = (struct ouichefs_dir_block *)bh->b_data;
 
 	/* Search for the file in directory */
@@ -164,6 +168,7 @@ static struct inode *ouichefs_new_inode(struct inode *dir, mode_t mode)
 	ino = get_free_inode(sbi);
 	if (!ino)
 		return ERR_PTR(-ENOSPC);
+
 	inode = ouichefs_iget(sb, ino);
 	if (IS_ERR(inode)) {
 		ret = PTR_ERR(inode);
@@ -171,13 +176,15 @@ static struct inode *ouichefs_new_inode(struct inode *dir, mode_t mode)
 	}
 	ci = OUICHEFS_INODE(inode);
 
-	/* Get a free block for this new inode's index */
-	bno = get_free_block(sbi);
-	if (!bno) {
-		ret = -ENOSPC;
-		goto put_inode;
+	/* Get a free block as index for directories, files is done in write */
+	if (S_ISDIR(mode)) {
+		bno = get_free_block(sbi);
+		if (!bno) {
+			ret = -ENOSPC;
+			goto put_inode;
+		}
+		ci->index_block = bno;
 	}
-	ci->index_block = bno;
 
 	/* Initialize inode */
 	inode_init_owner(&nop_mnt_idmap, inode, dir, mode);
@@ -217,8 +224,9 @@ static int ouichefs_create(struct mnt_idmap *idmap, struct inode *dir,
 	struct inode *inode;
 	struct ouichefs_inode_info *ci_dir;
 	struct ouichefs_dir_block *dblock;
+	struct buffer_head *bh;
+	struct buffer_head *bh2;
 	char *fblock;
-	struct buffer_head *bh, *bh2;
 	int ret = 0, i;
 
 	/* Check filename length */
@@ -247,18 +255,24 @@ static int ouichefs_create(struct mnt_idmap *idmap, struct inode *dir,
 	}
 
 	/*
-	 * Scrub index_block for new file/directory to avoid previous data
-	 * messing with new file/directory.
+	 * WARN: for files the scrubbing was moved to write_big_file in file.c
+	 *
+	 * Scrub index_block for new directory to avoid previous data
+	 * messing with new directory.
 	 */
-	bh2 = sb_bread(sb, OUICHEFS_INODE(inode)->index_block);
-	if (!bh2) {
-		ret = -EIO;
-		goto iput;
+	if (S_ISDIR(inode->i_mode)) {
+		bh2 = sb_bread(sb, OUICHEFS_INODE(inode)->index_block);
+		if (!bh2) {
+			ret = -EIO;
+			goto iput;
+		}
+		fblock = (char *)bh2->b_data;
+		memset(fblock, 0, OUICHEFS_BLOCK_SIZE);
+		mark_buffer_dirty(bh2);
+		brelse(bh2);
+	} else {
+		OUICHEFS_INODE(inode)->index_block = 0;
 	}
-	fblock = (char *)bh2->b_data;
-	memset(fblock, 0, OUICHEFS_BLOCK_SIZE);
-	mark_buffer_dirty(bh2);
-	brelse(bh2);
 
 	/* Find first free slot in parent index and register new inode */
 	for (i = 0; i < OUICHEFS_MAX_SUBFILES; i++)
@@ -277,11 +291,10 @@ static int ouichefs_create(struct mnt_idmap *idmap, struct inode *dir,
 		inode_inc_link_count(dir);
 	mark_inode_dirty(dir);
 
-	/* setup dentry */
+	/* Setup dentry */
 	d_instantiate(dentry, inode);
 
 	return 0;
-
 iput:
 	put_block(OUICHEFS_SB(sb), OUICHEFS_INODE(inode)->index_block);
 	put_inode(OUICHEFS_SB(sb), inode->i_ino);
@@ -347,35 +360,47 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 	 * forever. If we fail to scrub a data block, don't fail (too late
 	 * anyway), just put the block and continue.
 	 */
-	bh = sb_bread(sb, bno);
-	if (!bh)
-		goto clean_inode;
-	file_block = (struct ouichefs_file_index_block *)bh->b_data;
-	if (S_ISDIR(inode->i_mode))
+	if (S_ISDIR(inode->i_mode)) {
+		bh = sb_bread(sb, bno);
+		if (!bh)
+			goto clean_inode;
+		file_block = (struct ouichefs_file_index_block *)bh->b_data;
 		goto scrub;
-	for (i = 0; i < inode->i_blocks - 1; i++) {
-		char *block;
-
-		if (!file_block->blocks[i])
-			continue;
-
-    bh2 = sb_bread(sb, le32_to_cpu(file_block->blocks[i]));
-		if (!bh2)
-			goto put_block;
-		block = (char *)bh2->b_data;
-		memset(block, 0, OUICHEFS_BLOCK_SIZE);
-		mark_buffer_dirty(bh2);
-		brelse(bh2);
-put_block:
-		put_block(sbi, le32_to_cpu(file_block->blocks[i]));
 	}
+	if (!is_large_file(inode->i_size)) {
+		free_sliced_file(inode);
+		goto clean_inode;
+
+	} else {
+		/* Legacy block */
+		bh = sb_bread(sb, bno);
+		if (!bh)
+			goto clean_inode;
+		file_block = (struct ouichefs_file_index_block *)bh->b_data;
+		for (i = 0; i < inode->i_blocks - 1; i++) {
+			char *block;
+			if (!file_block->blocks[i])
+				continue;
+
+			bh2 = sb_bread(sb, le32_to_cpu(file_block->blocks[i]));
+			if (!bh2)
+				goto put_block;
+			block = (char *)bh2->b_data;
+			memset(block, 0, OUICHEFS_BLOCK_SIZE);
+			mark_buffer_dirty(bh2);
+			brelse(bh2);
+put_block:
+			put_block(sbi, le32_to_cpu(file_block->blocks[i]));
+		}
 
 scrub:
-	/* Scrub index block */
-	memset(file_block, 0, OUICHEFS_BLOCK_SIZE);
-	mark_buffer_dirty(bh);
-	sync_dirty_buffer(bh);
-	brelse(bh);
+		/* Scrub index block */
+		memset(file_block, 0, OUICHEFS_BLOCK_SIZE);
+		mark_buffer_dirty(bh);
+		sync_dirty_buffer(bh);
+		brelse(bh);
+		put_block(sbi, bno);
+	}
 
 clean_inode:
 	/* Cleanup inode and mark dirty */
@@ -391,9 +416,6 @@ clean_inode:
 		inode->i_atime.tv_nsec = 0;
 	inode_dec_link_count(inode);
 	mark_inode_dirty(inode);
-
-	/* Free inode and index block from bitmap */
-	put_block(sbi, bno);
 	put_inode(sbi, ino);
 
 	return 0;
@@ -423,6 +445,7 @@ static int ouichefs_rename(struct mnt_idmap *idmap, struct inode *old_dir,
 	bh_new = sb_bread(sb, ci_new->index_block);
 	if (!bh_new)
 		return -EIO;
+
 	dir_block = (struct ouichefs_dir_block *)bh_new->b_data;
 	for (i = 0; i < OUICHEFS_MAX_SUBFILES; i++) {
 		/* if old_dir == new_dir, save the renamed file position */
@@ -456,7 +479,7 @@ static int ouichefs_rename(struct mnt_idmap *idmap, struct inode *old_dir,
 		goto relse_new;
 	}
 
-	/* insert in new parent directory */
+	/* Insert in new parent directory */
 	dir_block->files[new_pos].inode = cpu_to_le32(src->i_ino);
 	strscpy(dir_block->files[new_pos].filename, new_dentry->d_name.name,
 		OUICHEFS_FILENAME_LEN);
@@ -470,10 +493,11 @@ static int ouichefs_rename(struct mnt_idmap *idmap, struct inode *old_dir,
 		inode_inc_link_count(new_dir);
 	mark_inode_dirty(new_dir);
 
-	/* remove target from old parent directory */
+	/* Remove target from old parent directory */
 	bh_old = sb_bread(sb, ci_old->index_block);
 	if (!bh_old)
 		return -EIO;
+
 	dir_block = (struct ouichefs_dir_block *)bh_old->b_data;
 	/* Search for inode in old directory and number of subfiles */
 	for (i = 0; OUICHEFS_MAX_SUBFILES; i++) {
@@ -524,6 +548,7 @@ static int ouichefs_rmdir(struct inode *dir, struct dentry *dentry)
 	bh = sb_bread(sb, OUICHEFS_INODE(inode)->index_block);
 	if (!bh)
 		return -EIO;
+
 	dblock = (struct ouichefs_dir_block *)bh->b_data;
 	if (dblock->files[0].inode != 0) {
 		brelse(bh);
