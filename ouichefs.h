@@ -51,7 +51,7 @@ struct ouichefs_inode {
 	__le64 i_nmtime; /* Modification time (nsec) */
 	__le32 i_blocks; /* Block count */
 	__le32 i_nlink; /* Hard links count */
-	__le32 index_block; /* Block with list of blocks for this file */
+	__le32 index_block; /* Index block for large files. For sliced blocks: 27 LSB store block number containing slice, 5 MSB store slice number in block */
 };
 
 struct ouichefs_inode_info {
@@ -67,6 +67,7 @@ struct ouichefs_sb_info {
 
 	uint32_t nr_blocks; /* Total number of blocks (incl sb & inodes) */
 	uint32_t nr_inodes; /* Total number of inodes */
+	uint32_t nr_sliced_blocks; /* Total number of sliced blocks */
 
 	uint32_t nr_istore_blocks; /* Number of inode store blocks */
 	uint32_t nr_ifree_blocks; /* Number of inode free bitmap blocks */
@@ -75,8 +76,13 @@ struct ouichefs_sb_info {
 	uint32_t nr_free_inodes; /* Number of free inodes */
 	uint32_t nr_free_blocks; /* Number of free blocks */
 
+	uint64_t s_free_sliced_blocks; /* Number of the first block in list of partially filled blocks, 0 = empty */
+
 	unsigned long *ifree_bitmap; /* In-memory free inodes bitmap */
 	unsigned long *bfree_bitmap; /* In-memory free blocks bitmap */
+
+	struct super_block *sb; /* Reference to on-disk super_block */
+	struct kobject sysfs_kobj; /* for the <partition> folder in /sys/fs/ */
 };
 
 struct ouichefs_file_index_block {
@@ -90,6 +96,17 @@ struct ouichefs_dir_block {
 	} files[OUICHEFS_MAX_SUBFILES];
 };
 
+struct ouichefs_sliced_block_header {
+	__le32 slice_bitmap; /* Availibility of slice (1 for free, 0 for occupied) */
+	__le32 next_partial_block; /* Block number of next partially filled block, 0 = last */
+	char padding[120];
+};
+
+struct ouichefs_sliced_block {
+	struct ouichefs_sliced_block_header header;
+	char slices[31][128];
+};
+
 /* superblock functions */
 int ouichefs_fill_super(struct super_block *sb, void *data, int silent);
 
@@ -97,6 +114,13 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent);
 int ouichefs_init_inode_cache(void);
 void ouichefs_destroy_inode_cache(void);
 struct inode *ouichefs_iget(struct super_block *sb, unsigned long ino);
+
+/* sysfs directory */
+extern struct kobject *ouichefs_sysfs_dir;
+
+/* sysfs functions */
+int ouichefs_sysfs_init(struct super_block *sb);
+void ouichefs_sysfs_exit(struct super_block *sb);
 
 /* block functions */
 int large_get_start(struct inode *inode, loff_t pos, struct buffer_head **bh,
@@ -113,6 +137,12 @@ extern const struct file_operations ouichefs_dir_ops;
 	(container_of(inode, struct ouichefs_inode_info, vfs_inode))
 
 /* Other inline helpers */
+
+static inline struct ouichefs_sb_info *
+OUICHEFS_SB_FROM_KOBJ(struct kobject *kobj)
+{
+	return container_of(kobj, struct ouichefs_sb_info, sysfs_kobj);
+}
 
 static inline uint32_t nr_necessary_blocks(size_t size)
 {

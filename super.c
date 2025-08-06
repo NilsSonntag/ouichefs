@@ -4,6 +4,7 @@
  *
  * Copyright (C) 2018 Redha Gouicem <redha.gouicem@lip6.fr>
  */
+
 #define pr_fmt(fmt) "%s:%s: " fmt, KBUILD_MODNAME, __func__
 
 #include <linux/module.h>
@@ -110,11 +111,13 @@ static int sync_sb_info(struct super_block *sb, int wait)
 
 	disk_sb->nr_blocks = cpu_to_le32(sbi->nr_blocks);
 	disk_sb->nr_inodes = cpu_to_le32(sbi->nr_inodes);
+	disk_sb->nr_sliced_blocks = cpu_to_le32(sbi->nr_sliced_blocks);
 	disk_sb->nr_istore_blocks = cpu_to_le32(sbi->nr_istore_blocks);
 	disk_sb->nr_ifree_blocks = cpu_to_le32(sbi->nr_ifree_blocks);
 	disk_sb->nr_bfree_blocks = cpu_to_le32(sbi->nr_bfree_blocks);
 	disk_sb->nr_free_inodes = cpu_to_le32(sbi->nr_free_inodes);
 	disk_sb->nr_free_blocks = cpu_to_le32(sbi->nr_free_blocks);
+	disk_sb->s_free_sliced_blocks = cpu_to_le64(sbi->s_free_sliced_blocks);
 
 	mark_buffer_dirty(bh);
 	if (wait)
@@ -267,11 +270,14 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 	}
 	sbi->nr_blocks = le32_to_cpu(csb->nr_blocks);
 	sbi->nr_inodes = le32_to_cpu(csb->nr_inodes);
+	sbi->nr_sliced_blocks = le32_to_cpu(csb->nr_sliced_blocks);
 	sbi->nr_istore_blocks = le32_to_cpu(csb->nr_istore_blocks);
 	sbi->nr_ifree_blocks = le32_to_cpu(csb->nr_ifree_blocks);
 	sbi->nr_bfree_blocks = le32_to_cpu(csb->nr_bfree_blocks);
 	sbi->nr_free_inodes = le32_to_cpu(csb->nr_free_inodes);
 	sbi->nr_free_blocks = le32_to_cpu(csb->nr_free_blocks);
+	sbi->s_free_sliced_blocks = le64_to_cpu(csb->s_free_sliced_blocks);
+	sbi->sb = sb;
 	sb->s_fs_info = sbi;
 
 	brelse(bh);
@@ -293,7 +299,7 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 		}
 
 		copy_bitmap_from_le64((void *)sbi->ifree_bitmap + i * OUICHEFS_BLOCK_SIZE,
-			(__le64 *)bh->b_data);
+				      (__le64 *)bh->b_data);
 
 		brelse(bh);
 	}
@@ -315,7 +321,7 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 		}
 
 		copy_bitmap_from_le64((void *)sbi->bfree_bitmap + i * OUICHEFS_BLOCK_SIZE,
-			(__le64 *)bh->b_data);
+				      (__le64 *)bh->b_data);
 
 		brelse(bh);
 	}
