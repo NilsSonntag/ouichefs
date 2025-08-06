@@ -143,6 +143,7 @@ extern const struct file_operations ouichefs_dir_ops;
 	(container_of(inode, struct ouichefs_inode_info, vfs_inode))
 
 /* Other inline helpers */
+
 static inline struct ouichefs_sb_info *
 OUICHEFS_SB_FROM_KOBJ(struct kobject *kobj)
 {
@@ -154,13 +155,17 @@ static inline bool is_large_file(size_t size)
 	return size > OUICHEFS_SMALL_FILE_SIZE;
 }
 
-/* Returns ceil(a/b) */
 static inline uint32_t idiv_ceil(uint32_t a, uint32_t b)
 {
 	uint32_t ret = a / b;
 	if (a % b != 0)
 		return ret + 1;
 	return ret;
+}
+
+static inline uint32_t nr_necessary_blocks(size_t size)
+{
+	return (roundup(size, OUICHEFS_BLOCK_SIZE) / OUICHEFS_BLOCK_SIZE) + 1;
 }
 
 #endif /* _OUICHEFS_H */

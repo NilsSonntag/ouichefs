@@ -1,3 +1,4 @@
+#include "ouichefs.h"
 #define pr_fmt(fmt) "%s:%s: " fmt, KBUILD_MODNAME, __func__
 
 #include <linux/module.h>
@@ -118,6 +119,7 @@ int large_get_start(struct inode *inode, loff_t pos, struct buffer_head **bh,
 
 /*
  * If file is smaller than before, free unused blocks
+ * Uses inode->i_blocks so has to be called before updating inode metadata
  */
 void shrink_multiblock_file(struct file *file)
 {
@@ -128,16 +130,13 @@ void shrink_multiblock_file(struct file *file)
 	struct ouichefs_file_index_block *index;
 	int i;
 
-	uint32_t nr_blocks_old = inode->i_blocks;
-	inode->i_blocks = (roundup(inode->i_size, OUICHEFS_BLOCK_SIZE) /
-			   OUICHEFS_BLOCK_SIZE) +
-			  1;
+	uint32_t old_nr_blocks = inode->i_blocks;
+	uint32_t new_nr_blocks = nr_necessary_blocks(inode->i_size);
 
-	if (!inode->i_blocks) {
+	if (!new_nr_blocks)
 		pr_info("iblocks is 0");
-	}
 
-	if (nr_blocks_old <= inode->i_blocks)
+	if (old_nr_blocks <= new_nr_blocks)
 		return;
 
 	/* Read index block to remove unused blocks */
@@ -145,12 +144,12 @@ void shrink_multiblock_file(struct file *file)
 	if (!bh_index) {
 		pr_err("failed truncating '%s'. we just lost %llu blocks\n",
 		       file->f_path.dentry->d_name.name,
-		       nr_blocks_old - inode->i_blocks);
+		       old_nr_blocks - new_nr_blocks);
 		return;
 	}
 	index = (struct ouichefs_file_index_block *)bh_index->b_data;
 
-	for (i = inode->i_blocks - 1; i < nr_blocks_old - 1; i++) {
+	for (i = new_nr_blocks - 1; i < old_nr_blocks - 1; i++) {
 		uint32_t bno = le32_to_cpu(index->blocks[i]);
 		if (bno) {
 			put_block(OUICHEFS_SB(sb), bno);
