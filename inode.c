@@ -36,6 +36,9 @@ struct inode *ouichefs_iget(struct super_block *sb, unsigned long ino)
 	if (ino >= sbi->nr_inodes)
 		return ERR_PTR(-EINVAL);
 
+	if (test_bit(ino, sbi->ifree_bitmap))
+		return ERR_PTR(-ENOENT);
+
 	/* Get a locked inode from Linux */
 	inode = iget_locked(sb, ino);
 	if (!inode)
@@ -48,6 +51,7 @@ struct inode *ouichefs_iget(struct super_block *sb, unsigned long ino)
 	/* Read inode from disk and initialize */
 	bh = sb_bread(sb, inode_block);
 	if (!bh) {
+		pr_err("We hit this EIO at %s:%d", __FILE_NAME__, __LINE__);
 		ret = -EIO;
 		goto failed;
 	}
@@ -114,8 +118,10 @@ static struct dentry *ouichefs_lookup(struct inode *dir, struct dentry *dentry,
 
 	/* Read the directory index block on disk */
 	bh = sb_bread(sb, ci_dir->index_block);
-	if (!bh)
+	if (!bh) {
+		pr_err("We hit this EIO at %s:%d", __FILE_NAME__, __LINE__);
 		return ERR_PTR(-EIO);
+	}
 	dblock = (struct ouichefs_dir_block *)bh->b_data;
 
 	/* Search for the file in directory */
@@ -158,13 +164,17 @@ static struct inode *ouichefs_new_inode(struct inode *dir, mode_t mode)
 	/* Check if inodes are available */
 	sb = dir->i_sb;
 	sbi = OUICHEFS_SB(sb);
-	if (sbi->nr_free_inodes == 0 || sbi->nr_free_blocks == 0)
+	if (sbi->nr_free_inodes == 0 || sbi->nr_free_blocks == 0) {
+		pr_err("ENOSPC at %s:%d", __FILE_NAME__, __LINE__);
 		return ERR_PTR(-ENOSPC);
+	}
 
 	/* Get a new free inode */
 	ino = get_free_inode(sbi);
-	if (!ino)
+	if (!ino) {
+		pr_err("ENOSPC at %s:%d", __FILE_NAME__, __LINE__);
 		return ERR_PTR(-ENOSPC);
+	}
 	inode = ouichefs_iget(sb, ino);
 	if (IS_ERR(inode)) {
 		ret = PTR_ERR(inode);
@@ -176,6 +186,7 @@ static struct inode *ouichefs_new_inode(struct inode *dir, mode_t mode)
 	if (S_ISDIR(mode)) {
 		bno = get_free_block(sbi);
 		if (!bno) {
+			pr_err("ENOSPC at %s:%d", __FILE_NAME__, __LINE__);
 			ret = -ENOSPC;
 			goto put_inode;
 		}
@@ -233,8 +244,10 @@ static int ouichefs_create(struct mnt_idmap *idmap, struct inode *dir,
 	ci_dir = OUICHEFS_INODE(dir);
 	sb = dir->i_sb;
 	bh = sb_bread(sb, ci_dir->index_block);
-	if (!bh)
+	if (!bh) {
+		pr_err("We hit this EIO at %s:%d", __FILE_NAME__, __LINE__);
 		return -EIO;
+	}
 	dblock = (struct ouichefs_dir_block *)bh->b_data;
 
 	/* Check if parent directory is full */
@@ -259,6 +272,8 @@ static int ouichefs_create(struct mnt_idmap *idmap, struct inode *dir,
 	if (S_ISDIR(inode->i_mode)) {
 		bh2 = sb_bread(sb, OUICHEFS_INODE(inode)->index_block);
 		if (!bh2) {
+			pr_err("We hit this EIO at %s:%d", __FILE_NAME__,
+			       __LINE__);
 			ret = -EIO;
 			goto iput;
 		}
@@ -323,8 +338,10 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 
 	/* Read parent directory index */
 	bh = sb_bread(sb, OUICHEFS_INODE(dir)->index_block);
-	if (!bh)
+	if (!bh) {
+		pr_err("We hit this EIO at %s:%d", __FILE_NAME__, __LINE__);
 		return -EIO;
+	}
 	dir_block = (struct ouichefs_dir_block *)bh->b_data;
 
 	/* Search for inode in parent index and get number of subfiles */
@@ -364,14 +381,12 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 		goto scrub;
 	}
 	if (!is_large_file(inode->i_size)) {
-		if (free_sliced_file(inode))
-			goto clean_inode;
+		free_sliced_file(inode);
+		goto clean_inode;
 
 	} else {
 		/* legacy block */
 		bh = sb_bread(sb, bno);
-		pr_info("file size: %lld", inode->i_size);
-		pr_info("block nr %u at %s:%d", bno, __FILE__, __LINE__);
 		if (!bh)
 			goto clean_inode;
 		file_block = (struct ouichefs_file_index_block *)bh->b_data;
@@ -441,8 +456,10 @@ static int ouichefs_rename(struct mnt_idmap *idmap, struct inode *old_dir,
 
 	/* Fail if new_dentry exists or if new_dir is full */
 	bh_new = sb_bread(sb, ci_new->index_block);
-	if (!bh_new)
+	if (!bh_new) {
+		pr_err("We hit this EIO at %s:%d", __FILE_NAME__, __LINE__);
 		return -EIO;
+	}
 	dir_block = (struct ouichefs_dir_block *)bh_new->b_data;
 	for (i = 0; i < OUICHEFS_MAX_SUBFILES; i++) {
 		/* if old_dir == new_dir, save the renamed file position */
@@ -492,8 +509,10 @@ static int ouichefs_rename(struct mnt_idmap *idmap, struct inode *old_dir,
 
 	/* remove target from old parent directory */
 	bh_old = sb_bread(sb, ci_old->index_block);
-	if (!bh_old)
+	if (!bh_old) {
+		pr_err("We hit this EIO at %s:%d", __FILE_NAME__, __LINE__);
 		return -EIO;
+	}
 	dir_block = (struct ouichefs_dir_block *)bh_old->b_data;
 	/* Search for inode in old directory and number of subfiles */
 	for (i = 0; OUICHEFS_MAX_SUBFILES; i++) {
@@ -542,8 +561,10 @@ static int ouichefs_rmdir(struct inode *dir, struct dentry *dentry)
 	if (inode->i_nlink > 2)
 		return -ENOTEMPTY;
 	bh = sb_bread(sb, OUICHEFS_INODE(inode)->index_block);
-	if (!bh)
+	if (!bh) {
+		pr_err("We hit this EIO at %s:%d", __FILE_NAME__, __LINE__);
 		return -EIO;
+	}
 	dblock = (struct ouichefs_dir_block *)bh->b_data;
 	if (dblock->files[0].inode != 0) {
 		brelse(bh);

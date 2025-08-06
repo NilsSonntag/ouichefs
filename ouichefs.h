@@ -20,8 +20,8 @@
 
 #define OUICHEFS_SLICES_PER_BLOCK 32
 #define OUICHEFS_SLICE_SIZE (OUICHEFS_BLOCK_SIZE / OUICHEFS_SLICES_PER_BLOCK)
-#define OUICHEFS_SMALL_FILE_SIZE OUICHEFS_SLICE_SIZE
-// (OUICHEFS_BLOCK_SIZE - OUICHEFS_SLICE_SIZE) /* for metadata slice */
+#define OUICHEFS_SMALL_FILE_SIZE \
+	(OUICHEFS_BLOCK_SIZE - OUICHEFS_SLICE_SIZE) /* for metadata slice */
 
 #define RETURN_UNALLOCATED 601
 
@@ -86,8 +86,9 @@ struct ouichefs_sb_info {
 	unsigned long *ifree_bitmap; /* In-memory free inodes bitmap */
 	unsigned long *bfree_bitmap; /* In-memory free blocks bitmap */
 
-	struct super_block *sb;
-	struct kobject sysfs_kobj;
+	struct super_block *sb; /* Reference to on-disk super_block */
+	struct kobject sysfs_kobj; /* for the <partition> folder in /sys/fs/ */
+	struct mutex bfree_lock; /* Locks bfree bitmap operations */
 };
 
 struct ouichefs_file_index_block {
@@ -104,6 +105,7 @@ struct ouichefs_dir_block {
 struct ouichefs_sliced_block_header {
 	__le32 slice_bitmap; /* Availibility of slice (1 for free, 0 for occupied) */
 	__le32 next_partial_block; /* Block number of next partially filled block, 0 = last */
+	__le16 largest_gap; /* Greatest number of contiguous free slices */
 	char padding[120];
 } __attribute__((packed));
 

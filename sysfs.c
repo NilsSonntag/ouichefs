@@ -48,6 +48,8 @@ static ssize_t total_free_slices_show(struct kobject *kobj,
 	while (curr != 0) {
 		// get free slices per block
 		bh = sb_bread(sb, curr);
+		if (!bh)
+			return -EIO;
 		struct ouichefs_sliced_block *s_block =
 			(struct ouichefs_sliced_block *)bh->b_data;
 		struct ouichefs_sliced_block_header s_header = s_block->header;
@@ -69,12 +71,9 @@ static ssize_t files_show(struct kobject *kobj, struct kobj_attribute *attr,
 	return snprintf(buf, PAGE_SIZE, "%u\n", files);
 }
 
-// FIX: removing small files does not work
-// If this sysfs is printed while a file exist it wont disappear
 static ssize_t small_files_show(struct kobject *kobj,
 				struct kobj_attribute *attr, char *buf)
 {
-	return files_show(kobj, attr, buf); // HACK: this is the temp solution
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB_FROM_KOBJ(kobj);
 	struct super_block *sb = sbi->sb;
 	unsigned int nr_small_files = 0;
@@ -90,8 +89,9 @@ static ssize_t small_files_show(struct kobject *kobj,
 			       "inode %u: nlink=%u, mode=%o, size=%llu\n",
 			       i, inode->i_nlink, inode->i_mode, inode->i_size);
 		}
-		if (S_ISREG(inode->i_mode) && inode->i_size > 0 &&
-		    inode->i_size < 128)
+		if (inode->i_nlink > 0 && S_ISREG(inode->i_mode) &&
+		    inode->i_size > 0 &&
+		    inode->i_size <= OUICHEFS_SMALL_FILE_SIZE)
 			nr_small_files++;
 		iput(inode);
 	}
@@ -102,9 +102,10 @@ static unsigned long long get_total_data_size(struct ouichefs_sb_info *sbi)
 {
 	struct super_block *sb = sbi->sb;
 	unsigned long long total_data_size = 0;
+	struct inode *inode;
 
 	for (unsigned int i = 1; i < sbi->nr_inodes; i++) {
-		struct inode *inode = ouichefs_iget(sb, i);
+		inode = ouichefs_iget(sb, i);
 		if (!inode || IS_ERR(inode))
 			continue;
 		if (S_ISREG(inode->i_mode) && inode->i_size > 0) {

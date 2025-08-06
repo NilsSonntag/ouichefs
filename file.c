@@ -53,21 +53,24 @@ static int write_check_space(struct inode *inode, size_t count, loff_t pos)
 /* 
  * Desc
  */
-static void write_null_terminator(char *start, size_t count, loff_t offset,
-				  unsigned int storage_size)
-{
-	unsigned int file_end = (offset + count) % storage_size;
-	if (file_end != storage_size - 1)
-		*(start + offset + count) = '\0';
-}
+// static void write_null_terminator(char *start, size_t count, loff_t offset,
+// 				  bool large_file)
+// {
+// 	uint32_t limit = large_file ?
+// 				 OUICHEFS_BLOCK_SIZE :
+// 				 roundup(offset + count, OUICHEFS_SLICE_SIZE);
+// 	uint32_t file_end = (offset + count) % limit;
+// 	if (file_end != limit - 1)
+// 		*(start + offset + count) = '\0';
+// }
 
 /*
  * Desc
  *
  * @return written bytes on success, -ERR otherwise
  */
-static ssize_t write_data(char *start_at, const char *buf, size_t count,
-			  loff_t offset)
+static ssize_t write_user_data(char *start_at, const char __user *buf,
+			       size_t count, loff_t offset)
 {
 	size_t bytes_to_write =
 		min(count, (size_t)(OUICHEFS_BLOCK_SIZE - offset));
@@ -96,12 +99,13 @@ void update_inode_metadata(struct file *file, loff_t new_size, bool large_file)
 	mark_inode_dirty(inode);
 }
 
-// TODO: 1.10
 static int ouichefs_open(struct inode *inode, struct file *file)
 {
 	bool wronly = (file->f_flags & O_WRONLY) != 0;
 	bool rdwr = (file->f_flags & O_RDWR) != 0;
 	bool trunc = (file->f_flags & O_TRUNC) != 0;
+
+	pr_info("call open");
 
 	if (!(wronly || rdwr) || !trunc || inode->i_size == 0)
 		return 0;
@@ -154,15 +158,14 @@ static ssize_t ouichefs_read(struct file *file, char __user *buf, size_t count,
 	char *start;
 	int err = 0;
 
+	pr_info("call read");
+
 	bool large_file = is_large_file(inode->i_size);
-	pr_info("large_file is therefore: %u", large_file);
 
 	if (large_file) {
-		pr_info("read calls large get start");
 		err = large_get_start(inode, pos, &bh_read, &start, false);
 	} else {
-		pr_info("read calls sliced get start");
-		err = sliced_get_start(inode, pos, &bh_read, &start, false);
+		err = sliced_get_start(inode, pos, &bh_read, &start);
 	}
 	if (err) {
 		if (err == -RETURN_UNALLOCATED) {
@@ -171,14 +174,21 @@ static ssize_t ouichefs_read(struct file *file, char __user *buf, size_t count,
 		return err;
 	}
 
+	pr_info("got start");
+
 	loff_t block_offset = pos % OUICHEFS_BLOCK_SIZE;
 	size_t bytes_to_read =
-		min3(count, (size_t)(OUICHEFS_BLOCK_SIZE - block_offset),
-		     (size_t)(inode->i_size - pos));
+		min(count, (size_t)(OUICHEFS_BLOCK_SIZE - block_offset));
+	// ,
+	// 	     (size_t)(inode->i_size - pos));
 	if (bytes_to_read == 0) {
+		pr_info("bytes 0, because count: %lu, block_offset: %llu, isize: %llu, and pos: %llu",
+			count, block_offset, inode->i_size, pos);
 		brelse(bh_read);
 		return 0;
 	}
+
+	pr_info("now copy");
 
 	if (large_file) {
 		err = copy_to_user(buf, start + block_offset, bytes_to_read);
@@ -189,6 +199,7 @@ static ssize_t ouichefs_read(struct file *file, char __user *buf, size_t count,
 
 	*offset += bytes_to_read;
 
+	pr_info("ende read");
 	return bytes_to_read;
 }
 
@@ -202,8 +213,16 @@ static ssize_t ouichefs_write(struct file *file, const char __user *buf,
 	loff_t offset;
 	ssize_t written_bytes;
 	char *start;
+	char *buf_for_expansion;
 	int err = 0;
+	bool expand_sliced_file = false;
 	bool large_file;
+
+	pr_info("called write with size: %llu", pos + count);
+
+	// Handle O_APPEND
+	if (file->f_flags & O_APPEND)
+		pos = inode->i_size;
 
 	err = write_check_space(inode, count, pos);
 	if (err)
@@ -214,39 +233,74 @@ static ssize_t ouichefs_write(struct file *file, const char __user *buf,
 	if (large_file) {
 		if (!is_large_file(inode->i_size)) {
 			err = free_sliced_file(inode);
-			if (err)
+			if (err && err != -RETURN_UNALLOCATED)
 				pr_err("could not free sliced file because %d",
 				       err);
-		} else {
-			pr_info("isize is: %llu, therefore no free sliced",
-				inode->i_size);
 		}
+		pr_info("write large file");
 		err = large_get_start(inode, pos, &bh_write, &start, true);
 	} else {
-		err = write_sliced_get_start(inode, pos, &bh_write, &start,
-					     &new_index_block, true);
+		uint32_t current_slices =
+			idiv_ceil(inode->i_size, OUICHEFS_SLICE_SIZE);
+		uint32_t needed_slices =
+			idiv_ceil(pos + count, OUICHEFS_SLICE_SIZE);
+
+		pr_info("current_slices: %u, needed_slices: %u", current_slices,
+			needed_slices);
+		if (current_slices > 0 && needed_slices > current_slices) {
+			expand_sliced_file = true;
+			buf_for_expansion =
+				kmalloc(OUICHEFS_SMALL_FILE_SIZE, GFP_KERNEL);
+			if (!buf_for_expansion) {
+				pr_err("ENOMEM at %s:%d", __FILE_NAME__,
+				       __LINE__);
+				return -ENOMEM;
+			}
+
+			/* get start of old file data */
+			err = sliced_get_start(inode, pos, &bh_write, &start);
+			if (err) {
+				kfree(buf_for_expansion);
+				return err;
+			}
+
+			memcpy(buf_for_expansion, start, pos);
+			brelse(bh_write);
+		}
+
+		err = write_sliced_get_start(inode, pos, count, &bh_write,
+					     &start, &new_index_block);
 	}
 	if (err)
 		return err;
 
+	if (expand_sliced_file) {
+		memcpy(start, buf_for_expansion, pos);
+		kfree(buf_for_expansion);
+	}
+
+	pr_info("next is write user data");
 	offset = pos % OUICHEFS_BLOCK_SIZE;
-	written_bytes = write_data(start, buf, count, offset);
+	written_bytes = write_user_data(start, buf, count, offset);
 	if (written_bytes <= 0) {
 		brelse(bh_write);
 		return written_bytes;
 	}
-	size_t limit = large_file ? OUICHEFS_BLOCK_SIZE : OUICHEFS_SLICE_SIZE;
-	write_null_terminator(start, count, offset, limit);
+	// write_null_terminator(start, count, offset, large_file);
+	pr_info("mark buffer");
 	mark_buffer_dirty(bh_write);
 	sync_dirty_buffer(bh_write);
 	brelse(bh_write);
 
-	*ppos += written_bytes;
+	*ppos = pos + written_bytes;
 
+	pr_info("update metadata");
 	update_inode_metadata(file, pos + written_bytes, large_file);
 	if (!large_file) {
 		OUICHEFS_INODE(inode)->index_block = new_index_block;
 	}
+
+	pr_info("ende");
 
 	return written_bytes;
 }
@@ -273,13 +327,16 @@ static long ouichefs_ioctl(struct file *file, unsigned int cmd,
 
 	block = ci->index_block & GENMASK(26, 0);
 	bh = sb_bread(sb, block);
-	if (!bh)
+	if (!bh) {
+		pr_err("Hit EIO at %s:%d", __FILE_NAME__, __LINE__);
 		return -EIO;
+	}
 
 	buffer_to_print =
 		kmalloc(OUICHEFS_BLOCK_SIZE + OUICHEFS_SLICES_PER_BLOCK + 1,
 			GFP_KERNEL);
 	if (!buffer_to_print) {
+		BUG();
 		ret = -ENOMEM;
 		goto brelse_bh;
 	}

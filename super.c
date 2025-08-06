@@ -4,6 +4,7 @@
  *
  * Copyright (C) 2018 Redha Gouicem <redha.gouicem@lip6.fr>
  */
+
 #define pr_fmt(fmt) "%s:%s: " fmt, KBUILD_MODNAME, __func__
 
 #include <linux/module.h>
@@ -159,13 +160,18 @@ static int sync_bfree(struct super_block *sb, int wait)
 	struct buffer_head *bh;
 	int i, idx;
 
+	pr_info("called sync_bfree");
+	mutex_lock(&sbi->bfree_lock);
+
 	/* Flush free blocks bitmask */
 	for (i = 0; i < sbi->nr_bfree_blocks; i++) {
 		idx = sbi->nr_istore_blocks + sbi->nr_ifree_blocks + i + 1;
 
 		bh = sb_bread(sb, idx);
-		if (!bh)
+		if (!bh) {
+			mutex_unlock(&sbi->bfree_lock);
 			return -EIO;
+		}
 
 		copy_bitmap_to_le64((__le64 *)bh->b_data,
 				    (void *)sbi->bfree_bitmap +
@@ -177,6 +183,7 @@ static int sync_bfree(struct super_block *sb, int wait)
 		brelse(bh);
 	}
 
+	mutex_unlock(&sbi->bfree_lock);
 	return 0;
 }
 
@@ -282,6 +289,9 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 	sb->s_fs_info = sbi;
 
 	brelse(bh);
+
+	/* bfree mutex */
+	mutex_init(&sbi->bfree_lock);
 
 	/* Alloc and copy ifree_bitmap */
 	sbi->ifree_bitmap =

@@ -1,3 +1,5 @@
+#define pr_fmt(fmt) "%s:%s: " fmt, KBUILD_MODNAME, __func__
+
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/fs.h>
@@ -22,8 +24,10 @@ int ouichefs_file_get_block(struct inode *inode, sector_t iblock,
 	int ret = 0, bno;
 
 	/* If block number exceeds filesize, fail */
-	if (iblock >= OUICHEFS_BLOCK_SIZE >> 2)
+	if (iblock >= OUICHEFS_BLOCK_SIZE >> 2) {
+		pr_err("EFBIG at %s:%d", __FILE_NAME__, __LINE__);
 		return -EFBIG;
+	}
 
 	/* Read index block from disk */
 	bh_index = sb_bread(sb, ci->index_block);
@@ -44,7 +48,6 @@ int ouichefs_file_get_block(struct inode *inode, sector_t iblock,
 		}
 		bno = get_free_block(sbi);
 		if (!bno) {
-			pr_err("ENOSPC at %s:%d", __FILE_NAME__, __LINE__);
 			ret = -ENOSPC;
 			goto brelse_index;
 		}
@@ -72,7 +75,6 @@ int large_get_start(struct inode *inode, loff_t pos, struct buffer_head **bh,
 	unsigned int iblock;
 	int err;
 
-	pr_info("index block: %u", ci->index_block);
 	if (ci->index_block == 0 || !is_large_file(inode->i_size)) {
 		if (!create)
 			return -RETURN_UNALLOCATED;
@@ -90,9 +92,9 @@ int large_get_start(struct inode *inode, loff_t pos, struct buffer_head **bh,
 			return -EIO;
 		}
 
-		// TODO: put bh->b_data direct in memset
-		char *fblock = (char *)bh->b_data;
-		memset(fblock, 0, OUICHEFS_BLOCK_SIZE);
+		// HACK:? put bh->b_data direct in memset
+		// char *fblock = (char *)bh->b_data;
+		memset((char *)bh->b_data, 0, OUICHEFS_BLOCK_SIZE);
 		mark_buffer_dirty(bh);
 		brelse(bh);
 
@@ -131,6 +133,10 @@ void shrink_multiblock_file(struct file *file)
 			   OUICHEFS_BLOCK_SIZE) +
 			  1;
 
+	if (!inode->i_blocks) {
+		pr_info("iblocks is 0");
+	}
+
 	if (nr_blocks_old <= inode->i_blocks)
 		return;
 
@@ -145,7 +151,10 @@ void shrink_multiblock_file(struct file *file)
 	index = (struct ouichefs_file_index_block *)bh_index->b_data;
 
 	for (i = inode->i_blocks - 1; i < nr_blocks_old - 1; i++) {
-		put_block(OUICHEFS_SB(sb), le32_to_cpu(index->blocks[i]));
+		uint32_t bno = le32_to_cpu(index->blocks[i]);
+		if (bno) {
+			put_block(OUICHEFS_SB(sb), bno);
+		}
 		index->blocks[i] = 0;
 	}
 	mark_buffer_dirty(bh_index);

@@ -56,12 +56,20 @@ static inline uint32_t get_free_block(struct ouichefs_sb_info *sbi)
 {
 	uint32_t ret;
 
+	mutex_lock(&sbi->bfree_lock);
 	ret = get_first_free_bit_and_clear(sbi->bfree_bitmap, sbi->nr_blocks);
 	if (ret) {
 		sbi->nr_free_blocks--;
 		pr_debug("%s:%d: allocated block %u\n", __func__, __LINE__,
 			 ret);
 	}
+
+	if (bitmap_weight(sbi->bfree_bitmap, sbi->nr_blocks) !=
+	    sbi->nr_free_blocks) {
+		pr_err("nr free blocks (%u) and bitmap are OUT OF SYNC!",
+		       sbi->nr_free_blocks);
+	}
+	mutex_unlock(&sbi->bfree_lock);
 	return ret;
 }
 
@@ -97,10 +105,19 @@ static inline void put_inode(struct ouichefs_sb_info *sbi, uint32_t ino)
  */
 static inline void put_block(struct ouichefs_sb_info *sbi, uint32_t bno)
 {
-	if (put_free_bit(sbi->bfree_bitmap, sbi->nr_blocks, bno))
+	mutex_lock(&sbi->bfree_lock);
+	if (put_free_bit(sbi->bfree_bitmap, sbi->nr_blocks, bno)) {
+		mutex_unlock(&sbi->bfree_lock);
 		return;
+	}
 
 	sbi->nr_free_blocks++;
+	if (sbi->nr_free_blocks > sbi->nr_blocks) {
+		pr_err("free blocks %u > blocks %u, ABORT", sbi->nr_free_blocks,
+		       sbi->nr_blocks);
+		BUG();
+	}
+	mutex_unlock(&sbi->bfree_lock);
 	pr_debug("%s:%d: freed block %u\n", __func__, __LINE__, bno);
 }
 
