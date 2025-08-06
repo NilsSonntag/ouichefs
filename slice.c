@@ -45,7 +45,7 @@ static void update_largest_gap(const unsigned long bitmap,
 static int find_best_fit(const unsigned long bitmap, const uint32_t needed)
 {
 	if (!needed) {
-		BUG();
+		pr_err("find_best_fit was called to find 0 slices");
 		return -EINVAL;
 	}
 
