@@ -18,12 +18,16 @@
 #include "block.h"
 #include "bitmap.h"
 
-/*
- * Check if the write can be completed (enough space?) 
+/**
+ * write_check_space - Check if the write can be completed, is there enough space?
+ * @inode: Inode to write to.
+ * @count: Number of bytes to write.
+ * @pos: Position to write at.
  *
- * @param count
- * @param pos
- * @return 0 if enough space, error number otherwise
+ * Checks if there is enough space in the filesystem to complete the requested write
+ * operation. Reports -ENOSPC if the write would exceed the maximum file size or available blocks.
+ *
+ * Return: 0 on success, -ENOSPC if there is not enough space.
  */
 static int write_check_space(struct inode *inode, size_t count, loff_t pos)
 {
