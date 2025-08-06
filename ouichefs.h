@@ -18,6 +18,8 @@
 #define OUICHEFS_FILENAME_LEN 28
 #define OUICHEFS_MAX_SUBFILES 128
 
+#define RETURN_UNALLOCATED 601
+
 /*
  * ouiche_fs partition layout
  *
@@ -96,14 +98,25 @@ int ouichefs_init_inode_cache(void);
 void ouichefs_destroy_inode_cache(void);
 struct inode *ouichefs_iget(struct super_block *sb, unsigned long ino);
 
+/* block functions */
+int large_get_start(struct inode *inode, loff_t pos, struct buffer_head **bh,
+		    char **start, bool create);
+void shrink_multiblock_file(struct file *file);
+
 /* file functions */
 extern const struct file_operations ouichefs_file_ops;
 extern const struct file_operations ouichefs_dir_ops;
-extern const struct address_space_operations ouichefs_aops;
 
 /* Getters for superbock and inode */
 #define OUICHEFS_SB(sb) (sb->s_fs_info)
 #define OUICHEFS_INODE(inode) \
 	(container_of(inode, struct ouichefs_inode_info, vfs_inode))
+
+/* Other inline helpers */
+
+static inline uint32_t nr_necessary_blocks(size_t size)
+{
+	return (roundup(size, OUICHEFS_BLOCK_SIZE) / OUICHEFS_BLOCK_SIZE) + 1;
+}
 
 #endif /* _OUICHEFS_H */

@@ -16,182 +16,58 @@
 #include "ouichefs.h"
 #include "bitmap.h"
 
-/*
- * Map the buffer_head passed in argument with the iblock-th block of the file
- * represented by inode. If the requested block is not allocated and create is
- * true, allocate a new block on disk and map it.
+/**
+ * check_write_space - Ensure enough space for write.
  */
-static int ouichefs_file_get_block(struct inode *inode, sector_t iblock,
-				   struct buffer_head *bh_result, int create)
+static int check_write_space(struct inode *inode, size_t count, loff_t pos)
 {
-	struct super_block *sb = inode->i_sb;
-	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
-	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
-	struct ouichefs_file_index_block *index;
-	struct buffer_head *bh_index;
-	int ret = 0, bno;
+	struct ouichefs_sb_info *sbi = OUICHEFS_SB(inode->i_sb);
+	uint32_t nr_allocs;
 
-	/* If block number exceeds filesize, fail */
-	if (iblock >= OUICHEFS_BLOCK_SIZE >> 2)
-		return -EFBIG;
-
-	/* Read index block from disk */
-	bh_index = sb_bread(sb, ci->index_block);
-	if (!bh_index)
-		return -EIO;
-	index = (struct ouichefs_file_index_block *)bh_index->b_data;
-
-	/*
-	 * Check if iblock is already allocated. If not and create is true,
-	 * allocate it. Else, get the physical block number.
-	 */
-	if (index->blocks[iblock] == 0) {
-		if (!create) {
-			ret = 0;
-			goto brelse_index;
-		}
-		bno = get_free_block(sbi);
-		if (!bno) {
-			ret = -ENOSPC;
-			goto brelse_index;
-		}
-		index->blocks[iblock] = cpu_to_le32(bno);
-		mark_buffer_dirty(bh_index);
-	} else {
-		bno = le32_to_cpu(index->blocks[iblock]);
-	}
-
-	/* Map the physical block to the given buffer_head */
-	map_bh(bh_result, sb, bno);
-
-brelse_index:
-	brelse(bh_index);
-
-	return ret;
-}
-
-/*
- * Called by the page cache to read a page from the physical disk and map it in
- * memory.
- */
-static void ouichefs_readahead(struct readahead_control *rac)
-{
-	mpage_readahead(rac, ouichefs_file_get_block);
-}
-
-/*
- * Called by the page cache to write a dirty page to the physical disk (when
- * sync is called or when memory is needed).
- */
-static int ouichefs_writepage(struct page *page, struct writeback_control *wbc)
-{
-	return block_write_full_page(page, ouichefs_file_get_block, wbc);
-}
-
-/*
- * Called by the VFS when a write() syscall occurs on file before writing the
- * data in the page cache. This functions checks if the write will be able to
- * complete and allocates the necessary blocks through block_write_begin().
- */
-static int ouichefs_write_begin(struct file *file,
-				struct address_space *mapping, loff_t pos,
-				unsigned int len, struct page **pagep,
-				void **fsdata)
-{
-	struct ouichefs_sb_info *sbi = OUICHEFS_SB(file->f_inode->i_sb);
-	int err;
-	uint32_t nr_allocs = 0;
-
-	/* Check if the write can be completed (enough space?) */
-	if (pos + len > OUICHEFS_MAX_FILESIZE)
+	if (pos + count > OUICHEFS_MAX_FILESIZE)
 		return -ENOSPC;
-	nr_allocs = max(pos + len, file->f_inode->i_size) / OUICHEFS_BLOCK_SIZE;
-	if (nr_allocs > file->f_inode->i_blocks - 1)
-		nr_allocs -= file->f_inode->i_blocks - 1;
-	else
-		nr_allocs = 0;
+
+	nr_allocs = max(pos + count, (unsigned long long)inode->i_size) /
+		    OUICHEFS_BLOCK_SIZE;
+	nr_allocs = (nr_allocs > inode->i_blocks - 1) ?
+			    nr_allocs - (inode->i_blocks - 1) :
+			    0;
+
 	if (nr_allocs > sbi->nr_free_blocks)
 		return -ENOSPC;
 
-	/* prepare the write */
-	err = block_write_begin(mapping, pos, len, pagep,
-				ouichefs_file_get_block);
-	/* if this failed, reclaim newly allocated blocks */
-	if (err < 0) {
-		pr_err("%s:%d: newly allocated blocks reclaim not implemented yet\n",
-		       __func__, __LINE__);
-	}
-	return err;
+	return 0;
 }
 
-/*
- * Called by the VFS after writing data from a write() syscall to the page
- * cache. This functions updates inode metadata and truncates the file if
- * necessary.
+/**
+ * ouichefs_copy_from_user - Copy user data to kernel buffer.
  */
-static int ouichefs_write_end(struct file *file, struct address_space *mapping,
-			      loff_t pos, unsigned int len, unsigned int copied,
-			      struct page *page, void *fsdata)
+static ssize_t ouichefs_copy_from_user(char *dst, const char __user *src,
+				       size_t count, loff_t offset)
 {
-	int ret;
-	struct inode *inode = file->f_inode;
-	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
-	struct super_block *sb = inode->i_sb;
+	size_t n = min(count, (size_t)(OUICHEFS_BLOCK_SIZE - offset));
+	if (!n)
+		return 0;
+	if (copy_from_user(dst + offset, src, n))
+		return -EFAULT;
 
-	/* Complete the write() */
-	ret = generic_write_end(file, mapping, pos, len, copied, page, fsdata);
-	if (ret < len) {
-		pr_err("%s:%d: wrote less than asked... what do I do? nothing for now...\n",
-		       __func__, __LINE__);
-	} else {
-		uint32_t nr_blocks_old = inode->i_blocks;
-
-		/* Update inode metadata */
-		inode->i_blocks = (roundup(inode->i_size, OUICHEFS_BLOCK_SIZE) /
-				   OUICHEFS_BLOCK_SIZE) +
-				  1;
-		inode->i_mtime = inode->i_ctime = current_time(inode);
-		mark_inode_dirty(inode);
-
-		/* If file is smaller than before, free unused blocks */
-		if (nr_blocks_old > inode->i_blocks) {
-			int i;
-			struct buffer_head *bh_index;
-			struct ouichefs_file_index_block *index;
-
-			/* Free unused blocks from page cache */
-			truncate_pagecache(inode, inode->i_size);
-
-			/* Read index block to remove unused blocks */
-			bh_index = sb_bread(sb, ci->index_block);
-			if (!bh_index) {
-				pr_err("failed truncating '%s'. we just lost %llu blocks\n",
-				       file->f_path.dentry->d_name.name,
-				       nr_blocks_old - inode->i_blocks);
-				goto end;
-			}
-			index = (struct ouichefs_file_index_block *)
-					bh_index->b_data;
-
-			for (i = inode->i_blocks - 1; i < nr_blocks_old - 1;
-			     i++) {
-				put_block(OUICHEFS_SB(sb), le32_to_cpu(index->blocks[i]));
-				index->blocks[i] = 0;
-			}
-			mark_buffer_dirty(bh_index);
-			brelse(bh_index);
-		}
-	}
-end:
-	return ret;
+	return n;
 }
 
-const struct address_space_operations ouichefs_aops = {
-	.readahead = ouichefs_readahead,
-	.writepage = ouichefs_writepage,
-	.write_begin = ouichefs_write_begin,
-	.write_end = ouichefs_write_end
-};
+/**
+ * update_inode_metadata - Update inode size and timestamps.
+ */
+static void update_inode_metadata(struct file *file, loff_t new_size)
+{
+	struct inode *inode = file_inode(file);
+
+	inode->i_size = new_size;
+	inode->i_mtime = inode->i_ctime = current_time(inode);
+	inode->i_blocks = nr_necessary_blocks(new_size);
+	mark_inode_dirty(inode);
+}
+
+/* File Operations */
 
 static int ouichefs_open(struct inode *inode, struct file *file)
 {
@@ -199,39 +75,117 @@ static int ouichefs_open(struct inode *inode, struct file *file)
 	bool rdwr = (file->f_flags & O_RDWR) != 0;
 	bool trunc = (file->f_flags & O_TRUNC) != 0;
 
-	if ((wronly || rdwr) && trunc && (inode->i_size != 0)) {
-		struct super_block *sb = inode->i_sb;
-		struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
-		struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
-		struct ouichefs_file_index_block *index;
-		struct buffer_head *bh_index;
-		sector_t iblock;
+	if (!(wronly || rdwr) || !trunc || inode->i_size == 0)
+		return 0;
 
-		/* Read index block from disk */
-		bh_index = sb_bread(sb, ci->index_block);
-		if (!bh_index)
-			return -EIO;
-		index = (struct ouichefs_file_index_block *)bh_index->b_data;
+	struct super_block *sb = inode->i_sb;
+	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
+	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
+	struct ouichefs_file_index_block *index;
+	struct buffer_head *bh_index;
+	sector_t iblock;
 
-		for (iblock = 0; index->blocks[iblock] != 0; iblock++) {
-			put_block(sbi, le32_to_cpu(index->blocks[iblock]));
-			index->blocks[iblock] = 0;
-		}
-		inode->i_size = 0;
-		inode->i_blocks = 1;
+	/* Read index block from disk */
+	bh_index = sb_bread(sb, ci->index_block);
+	if (!bh_index)
+		return -EIO;
+	index = (struct ouichefs_file_index_block *)bh_index->b_data;
 
-		mark_buffer_dirty(bh_index);
-		brelse(bh_index);
+	for (iblock = 0; index->blocks[iblock] != 0; iblock++) {
+		put_block(sbi, le32_to_cpu(index->blocks[iblock]));
+		index->blocks[iblock] = 0;
 	}
+	inode->i_size = 0;
+	inode->i_blocks = 1;
+
+	mark_buffer_dirty(bh_index);
+	brelse(bh_index);
 
 	return 0;
+}
+
+static ssize_t ouichefs_read(struct file *file, char __user *buf, size_t count,
+			     loff_t *offset)
+{
+	struct inode *inode = file_inode(file);
+	struct buffer_head *bh_read = NULL;
+	loff_t pos = *offset;
+	char *start;
+	int err;
+
+	err = large_get_start(inode, pos, &bh_read, &start, false);
+
+	if (err) {
+		/* no error if there is no data in a file */
+		if (err == -RETURN_UNALLOCATED)
+			return 0;
+		return err;
+	}
+
+	loff_t block_offset = pos % OUICHEFS_BLOCK_SIZE;
+	size_t bytes_to_read =
+		min(count, (size_t)(OUICHEFS_BLOCK_SIZE - block_offset));
+
+	if (!bytes_to_read) {
+		brelse(bh_read);
+		return 0;
+	}
+
+	if (copy_to_user(buf, start + block_offset, bytes_to_read)) {
+		brelse(bh_read);
+		return -EFAULT;
+	}
+	brelse(bh_read);
+
+	*offset += bytes_to_read;
+	return bytes_to_read;
+}
+
+static ssize_t ouichefs_write(struct file *file, const char __user *buf,
+			      size_t count, loff_t *ppos)
+{
+	struct inode *inode = file_inode(file);
+	struct buffer_head *bh_write;
+	loff_t pos = *ppos;
+	loff_t offset;
+	ssize_t written_bytes;
+	char *start;
+	int err;
+
+	if (file->f_flags & O_APPEND)
+		pos = inode->i_size;
+
+	err = check_write_space(inode, count, pos);
+	if (err)
+		return err;
+
+	err = large_get_start(inode, pos, &bh_write, &start, true);
+	if (err)
+		return err;
+
+	offset = pos % OUICHEFS_BLOCK_SIZE;
+	written_bytes = ouichefs_copy_from_user(start, buf, count, offset);
+	if (written_bytes <= 0) {
+		brelse(bh_write);
+		return written_bytes;
+	}
+
+	mark_buffer_dirty(bh_write);
+	sync_dirty_buffer(bh_write);
+	brelse(bh_write);
+
+	shrink_multiblock_file(file);
+	update_inode_metadata(file, pos + written_bytes);
+
+	*ppos = pos + written_bytes;
+	return written_bytes;
 }
 
 const struct file_operations ouichefs_file_ops = {
 	.owner = THIS_MODULE,
 	.open = ouichefs_open,
 	.llseek = generic_file_llseek,
-	.read_iter = generic_file_read_iter,
-	.write_iter = generic_file_write_iter,
+	.read = ouichefs_read,
+	.write = ouichefs_write,
 	.fsync = generic_file_fsync,
 };
