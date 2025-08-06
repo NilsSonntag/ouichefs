@@ -13,7 +13,6 @@
 #include <linux/slab.h>
 
 #include "ouichefs.h"
-#include "slice.h"
 #include "bitmap.h"
 
 static const struct inode_operations ouichefs_inode_ops;

@@ -112,15 +112,13 @@ static int create_index_block(struct inode *inode)
 int large_get_start(struct inode *inode, loff_t pos, struct buffer_head **bh,
 		    char **start, bool create)
 {
-	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
-	struct super_block *sb = inode->i_sb;
-	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	sector_t block;
 	unsigned int iblock;
 	int err;
 
 	/* Check for existing index block, otherwise return UNALLOCATED or create one */
-	if (!ci->index_block || !is_large_file(inode->i_size)) {
+	if (!OUICHEFS_INODE(inode)->index_block ||
+	    !is_large_file(inode->i_size)) {
 		if (!create)
 			return -RETURN_UNALLOCATED;
 
@@ -134,7 +132,7 @@ int large_get_start(struct inode *inode, loff_t pos, struct buffer_head **bh,
 	if (err)
 		return err;
 
-	*bh = sb_bread(sb, block);
+	*bh = sb_bread(inode->i_sb, block);
 	if (!(*bh)) {
 		pr_err("Something went wrong, can not open the freshly allocated block");
 		return -EIO;
@@ -167,7 +165,7 @@ void shrink_multiblock_file(struct file *file)
 
 	bh_index = sb_bread(sb, OUICHEFS_INODE(inode)->index_block);
 	if (!bh_index) {
-		pr_err("failed truncating '%s'. we just lost %llu blocks\n",
+		pr_err("failed truncating '%s'. we just lost %u blocks\n",
 		       file->f_path.dentry->d_name.name,
 		       old_nr_blocks - new_nr_blocks);
 		return;
