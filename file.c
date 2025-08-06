@@ -191,10 +191,12 @@ static ssize_t ouichefs_write(struct file *file, const char __user *buf,
 
 	if (large_file) {
 		if (!is_large_file(inode->i_size)) {
-			/* Regain space if file was sliced before */
+			/* Regain space if file was sliced before, do not fail on error as space loss is not critical */
 			err = free_sliced_file(inode);
-			if (err && err != -RETURN_UNALLOCATED)
-				return err;
+			if (err && err != -RETURN_UNALLOCATED){
+						pr_err("failed freeing to extend '%s'. we just lost some slices\n",
+		       file->f_path.dentry->d_name.name);
+			}
 
 			err = large_get_start(inode, pos, &bh_write, &start,
 					      true);
