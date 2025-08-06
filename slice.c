@@ -23,6 +23,28 @@ static uint32_t get_size_of_gap(const uint32_t bitmap, const uint32_t start_at)
 	return gap;
 }
 
+/**
+ * update_largest_gap - Update the largest gap value in a slice bitmap.
+ * @bitmap: Slice bitmap.
+ * @largest_gap: Pointer to largest gap variable to update.
+ * Scans the bitmap and sets *@largest_gap to the largest free gap found.
+ */
+static void update_largest_gap(const unsigned long bitmap,
+			       uint32_t *largest_gap)
+{
+	uint32_t gap;
+
+	int i = 1; /* Skip metadata slice */
+	while (i < OUICHEFS_SLICES_PER_BLOCK) {
+		i = find_next_bit(&bitmap, OUICHEFS_SLICES_PER_BLOCK, i);
+		gap = get_size_of_gap(bitmap, i);
+		if (gap >= *largest_gap)
+			*largest_gap = gap;
+
+		i += gap;
+	}
+}
+
 /*
  * Uses the best fit algorithm to find the a position of at least @needed size in the given bitmap.
  * Return: 0 if not enough free slices found (assumes that the first slice is always metadata)
@@ -98,6 +120,7 @@ static int get_new_sliced_block(struct ouichefs_sb_info *sbi)
  * @res_bno: Pointer to return block number.
  * @res_slice: Pointer to return starting slice.
  * @bh: Pointer to buffer_head pointer for the block (caller must brelse).
+ * @nr_slices: Number of slices to allocate.
  *
  * Finds or allocates a sliced block with enough free slices, updates the bitmap,
  * and sets the block and slice index.
@@ -106,27 +129,42 @@ static int get_new_sliced_block(struct ouichefs_sb_info *sbi)
  * Return: 0 on success, negative error code on failure.
  */
 static int alloc_slices(struct inode *inode, sector_t *res_bno,
-			unsigned int *res_slice, struct buffer_head **bh)
+			unsigned int *res_slice, struct buffer_head **bh,
+			uint32_t nr_slices)
 {
 	struct super_block *sb = inode->i_sb;
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	struct ouichefs_sliced_block *s_block;
+	uint32_t largest_gap = 0;
 	bool new_block = false;
-	/* For now we only use 1 slice */
-	uint32_t nr_slices = 1;
 
 	*res_bno = sbi->s_free_sliced_blocks;
+
+	while (*res_bno != 0) {
+		*bh = sb_bread(sb, *res_bno);
+		if (!(*bh))
+			return -EIO;
+
+		s_block = (struct ouichefs_sliced_block *)(*bh)->b_data;
+		largest_gap = le32_to_cpu(s_block->header.largest_gap);
+		if (largest_gap >= nr_slices)
+			break;
+
+		*res_bno = le32_to_cpu(s_block->header.next_partial_block);
+		brelse(*bh);
+	}
 	if (*res_bno == 0) {
 		int err = get_new_sliced_block(sbi);
 		if (err < 0)
 			return err;
 		*res_bno = sbi->s_free_sliced_blocks;
+		*bh = sb_bread(sb, *res_bno);
+		if (!(*bh))
+			return -EIO;
+		s_block = (struct ouichefs_sliced_block *)(*bh)->b_data;
 		new_block = true;
 	}
-	*bh = sb_bread(sb, *res_bno);
-	if (!(*bh))
-		return -EIO;
-	s_block = (struct ouichefs_sliced_block *)(*bh)->b_data;
+
 	unsigned long bitmap = le32_to_cpu(s_block->header.slice_bitmap);
 
 	if (!new_block) {
@@ -136,17 +174,21 @@ static int alloc_slices(struct inode *inode, sector_t *res_bno,
 			brelse(*bh);
 			return -EFAULT;
 		}
-		pr_info("found best fit");
 	} else {
 		*res_slice = 1;
+		largest_gap = 0;
 	}
-	pr_info("clear bitmap");
 
 	bitmap_clear(&bitmap, *res_slice, nr_slices);
 
 	if (bitmap == 0) {
 		sbi->s_free_sliced_blocks =
 			le32_to_cpu(s_block->header.next_partial_block);
+		s_block->header.largest_gap = 0;
+	} else {
+		largest_gap = 0;
+		update_largest_gap(bitmap, &largest_gap);
+		s_block->header.largest_gap = cpu_to_le32(largest_gap);
 	}
 
 	s_block->header.slice_bitmap = cpu_to_le32(bitmap);
@@ -224,17 +266,29 @@ int write_sliced_get_start(struct inode *inode, loff_t pos, size_t count,
 	struct ouichefs_sliced_block *s_block;
 	sector_t sliced_block_nr;
 	uint32_t slice;
+	uint32_t current_slices;
+	uint32_t needed_slices;
 	int err;
 
-	if (!inode->i_size) {
-		/* alloc_new */
-		err = alloc_slices(inode, &sliced_block_nr, &slice, bh);
+	current_slices = idiv_ceil(inode->i_size, OUICHEFS_SLICE_SIZE);
+	needed_slices = idiv_ceil(pos + count, OUICHEFS_SLICE_SIZE);
+	if (needed_slices > current_slices) {
+alloc_new:
+		if (current_slices > 0) {
+			err = free_sliced_file(inode);
+			if (err)
+				return err;
+		}
+		err = alloc_slices(inode, &sliced_block_nr, &slice, bh,
+				   needed_slices);
 		if (err)
 			return err;
 	} else {
 		err = file_get_first_slice(inode, &sliced_block_nr, &slice);
-		if (err)
+		if (err) {
 			pr_err("got UNALLOCATED where it should not be possible");
+			goto alloc_new;
+		}
 	}
 
 	if (!(*bh)) {
@@ -335,7 +389,8 @@ static inline void add_to_partial_list(struct ouichefs_sb_info *sbi,
  * Marks slices as free in the bitmap, clears their data, and updates the partial list.
  * Return: 0 on success, negative error code on failure.
  */
-int put_slices(struct super_block *sb, sector_t block, uint32_t starting_slice)
+int put_slices(struct super_block *sb, sector_t block, uint32_t starting_slice,
+	       uint32_t nr_slices)
 {
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	struct buffer_head *bh;
@@ -352,8 +407,9 @@ int put_slices(struct super_block *sb, sector_t block, uint32_t starting_slice)
 		add_to_partial_list(sbi, s_block, block);
 	}
 
-	bitmap_set(&slice_bitmap, starting_slice, 1);
-	memset(s_block->slices[starting_slice], 0, OUICHEFS_SLICE_SIZE);
+	bitmap_set(&slice_bitmap, starting_slice, nr_slices);
+	memset(s_block->slices[starting_slice], 0,
+	       OUICHEFS_SLICE_SIZE * nr_slices);
 
 	/* If slice was last in block, put block */
 	if (slice_bitmap == GENMASK((OUICHEFS_SLICES_PER_BLOCK - 1), 1)) {
@@ -365,7 +421,10 @@ int put_slices(struct super_block *sb, sector_t block, uint32_t starting_slice)
 		sbi->nr_sliced_blocks--;
 		put_block(sbi, block);
 	} else {
+		uint32_t largest_gap = le32_to_cpu(s_block->header.largest_gap);
+		update_largest_gap(slice_bitmap, &largest_gap);
 		s_block->header.slice_bitmap = cpu_to_le32(slice_bitmap);
+		s_block->header.largest_gap = cpu_to_le32(largest_gap);
 	}
 
 	mark_buffer_dirty(bh);
@@ -389,8 +448,11 @@ int free_sliced_file(struct inode *inode)
 	if (err)
 		return err;
 
-	put_slices(inode->i_sb, block,
-		   slice); /* Ignore error, but can result in data space loss */
+	uint32_t nr_slices = idiv_ceil(inode->i_size, OUICHEFS_SLICE_SIZE);
+
+	put_slices(
+		inode->i_sb, block, slice,
+		nr_slices); /* Ignore error, but can result in data space loss */
 
 	pr_debug("unlink in block nr: %llu, for slice %d", block, slice);
 	return 0;

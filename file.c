@@ -167,7 +167,9 @@ static ssize_t ouichefs_write(struct file *file, const char __user *buf,
 	loff_t offset;
 	ssize_t written_bytes;
 	char *start;
+	char *buf_for_expansion = NULL;
 	int err;
+	bool expand_sliced_file = false;
 	bool large_file;
 
 	if (file->f_flags & O_APPEND)
@@ -184,17 +186,46 @@ static ssize_t ouichefs_write(struct file *file, const char __user *buf,
 			/* Regain space if file was sliced before, do not fail on error as space loss is not critical */
 			err = free_sliced_file(inode);
 			if (err && err != -RETURN_UNALLOCATED)
-				pr_err("failed freeing to extend '%s'. we just lost a slice\n",
+				pr_err("failed freeing to extend '%s'. we just lost some slices\n",
 				       file->f_path.dentry->d_name.name);
 		}
 
 		err = large_get_start(inode, pos, &bh_write, &start, true);
 	} else {
+		uint32_t current_slices =
+			idiv_ceil(inode->i_size, OUICHEFS_SLICE_SIZE);
+		uint32_t needed_slices =
+			idiv_ceil(pos + count, OUICHEFS_SLICE_SIZE);
+
+		if (current_slices > 0 && needed_slices != current_slices) {
+			/* Get old file data to copy to new data position */
+			expand_sliced_file = true;
+			buf_for_expansion =
+				kmalloc(OUICHEFS_SMALL_FILE_SIZE, GFP_KERNEL);
+			if (!buf_for_expansion)
+				return -ENOMEM;
+
+			err = read_sliced_get_start(inode, pos, &bh_write,
+						    &start);
+			if (err) {
+				kfree(buf_for_expansion);
+				return err;
+			}
+
+			memcpy(buf_for_expansion, start, pos);
+			brelse(bh_write);
+		}
+
 		err = write_sliced_get_start(inode, pos, count, &bh_write,
 					     &start, &new_index_block);
 	}
 	if (err)
 		return err;
+
+	if (expand_sliced_file) {
+		memcpy(start, buf_for_expansion, pos);
+		kfree(buf_for_expansion);
+	}
 
 	offset = pos % OUICHEFS_BLOCK_SIZE;
 	written_bytes = ouichefs_copy_from_user(start, buf, count, offset);

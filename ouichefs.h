@@ -20,7 +20,8 @@
 
 #define OUICHEFS_SLICES_PER_BLOCK 32
 #define OUICHEFS_SLICE_SIZE (OUICHEFS_BLOCK_SIZE / OUICHEFS_SLICES_PER_BLOCK)
-#define OUICHEFS_SMALL_FILE_SIZE 128
+#define OUICHEFS_SMALL_FILE_SIZE \
+	(OUICHEFS_BLOCK_SIZE - OUICHEFS_SLICE_SIZE) /* for metadata slice */
 
 #define RETURN_UNALLOCATED 601
 
@@ -104,6 +105,7 @@ struct ouichefs_dir_block {
 struct ouichefs_sliced_block_header {
 	__le32 slice_bitmap; /* Availibility of slice (1 for free, 0 for occupied) */
 	__le32 next_partial_block; /* Block number of next partially filled block, 0 = last */
+	__le16 largest_gap; /* Greatest number of contiguous free slices */
 	char padding[120];
 };
 
@@ -139,7 +141,8 @@ int write_sliced_get_start(struct inode *inode, loff_t pos, size_t count,
 			   struct buffer_head **bh, char **start,
 			   sector_t *new_index_block);
 int free_sliced_file(struct inode *inode);
-int put_slices(struct super_block *sb, sector_t block, uint32_t starting_slice);
+int put_slices(struct super_block *sb, sector_t block, uint32_t starting_slice,
+	       uint32_t nr_slices);
 int remove_from_partial_list(struct super_block *sb, sector_t block,
 			     struct ouichefs_sliced_block *s_block);
 
